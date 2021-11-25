@@ -689,7 +689,7 @@ get_variable_by_name (lex_ctxt *ctxt, const char *name)
      switch (t2)
        {
        case VAR2_INT:
-         nasl_trace (NULL, "NASL> %s <- %d\n", get_var_name (v1), v1->v.v_int);
+         nasl_trace (NULL, "NASL> %s <- %lu\n", get_var_name (v1), v1->v.v_int);
          break;
        case VAR2_STRING:
        case VAR2_DATA:
@@ -876,7 +876,8 @@ get_variable_by_name (lex_ctxt *ctxt, const char *name)
        ret->type = CONST_INT;
        ret->x.i_val = v->v.v_int;
        if (nasl_trace_enabled ())
-         nasl_trace (lexic, "NASL> %s -> %d\n", get_var_name (v), ret->x.i_val);
+         nasl_trace (lexic, "NASL> %s -> %lu\n", get_var_name (v),
+                     ret->x.i_val);
        return ret;
 
      case VAR2_STRING:
@@ -1087,8 +1088,11 @@ get_variable_by_name (lex_ctxt *ctxt, const char *name)
        break;
      case VAR2_STRING:
      case VAR2_DATA:
+#pragma GCC diagnostic push
+#pragma GCC diagnostic warning "-Wdeprecated-declarations"
        v->string_form =
          g_memdup ((char *) v->v.v_str.s_val ?: "", v->v.v_str.s_siz + 1);
+#pragma GCC diagnostic pop
        break;
      case VAR2_UNDEF:
        break;

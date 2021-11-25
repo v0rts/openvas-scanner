@@ -25,10 +25,11 @@
 
 #include "attack.h"
 
-#include "../misc/network.h"        /* for auth_printf */
-#include "../misc/nvt_categories.h" /* for ACT_INIT */
-#include "../misc/pcap_openvas.h"   /* for v6_is_local_ip */
-#include "../nasl/nasl_debug.h"     /* for nasl_*_filename */
+#include "../misc/network.h"          /* for auth_printf */
+#include "../misc/nvt_categories.h"   /* for ACT_INIT */
+#include "../misc/pcap_openvas.h"     /* for v6_is_local_ip */
+#include "../misc/table_driven_lsc.h" /*for make_table_driven_lsc_info_json_str */
+#include "../nasl/nasl_debug.h"       /* for nasl_*_filename */
 #include "hosts.h"
 #include "pluginlaunch.h"
 #include "pluginload.h"
@@ -48,7 +49,8 @@
 #include <gvm/base/proctitle.h>
 #include <gvm/boreas/alivedetection.h> /* for start_alive_detection() */
 #include <gvm/boreas/boreas_io.h>      /* for get_host_from_queue() */
-#include <gvm/util/nvticache.h>        /* for nvticache_t */
+#include <gvm/util/mqtt.h>
+#include <gvm/util/nvticache.h> /* for nvticache_t */
 #include <pthread.h>
 #include <stdlib.h>   /* for exit() */
 #include <string.h>   /* for strlen() */
@@ -56,7 +58,6 @@
 #include <unistd.h>   /* for close() */
 
 #define ERR_HOST_DEAD -1
-#define ERR_CANT_FORK -2
 
 #define MAX_FORK_RETRIES 10
 /**
@@ -379,19 +380,161 @@ check_new_vhosts (void)
 }
 
 /**
+ * @brief Publish the necessary data to start a Table driven LSC scan.
+ *
+ * If the gather-package-list.nasl plugin was launched, and it generated
+ * a valid package list for a supported OS, the table driven LSC scan
+ * which is subscribed to the topic will perform a scan an publish the
+ * the results to be handle by the sensor/client.
+ *
+ * @param scan_id     Scan Id.
+ * @param kb
+ * @param ip_str      IP string of host.
+ * @param hostname    Name of host.
+ *
+ * @return 0 on success, less than 0 on error.
+ */
+static int
+run_table_driven_lsc (const char *scan_id, kb_t kb, const char *ip_str,
+                      const char *hostname)
+{
+  gchar *json_str;
+  gchar *package_list;
+  gchar *os_release;
+  gchar *topic;
+  gchar *payload;
+  gchar *status = NULL;
+  int topic_len;
+  int payload_len;
+  int err = 0;
+
+  // Subscribe to status topic
+  err = mqtt_subscribe ("scanner/status");
+  if (err)
+    {
+      g_warning ("%s: Error starting lsc. Unable to subscribe", __func__);
+      return -1;
+    }
+  /* Get the OS release. TODO: have a list with supported OS. */
+  os_release = kb_item_get_str (kb, "ssh/login/release_notus");
+  /* Get the package list. Currently only rpm support */
+  package_list = kb_item_get_str (kb, "ssh/login/rpms_notus");
+  if (!os_release || !package_list)
+    return 0;
+
+  json_str = make_table_driven_lsc_info_json_str (scan_id, ip_str, hostname,
+                                                  os_release, package_list);
+  g_free (package_list);
+  g_free (os_release);
+
+  // Run table driven lsc
+  if (json_str == NULL)
+    return -1;
+  err = mqtt_publish ("scanner/package/cmd/notus", json_str);
+  if (err)
+    {
+      g_warning ("%s: Error publishing message for Notus.", __func__);
+      g_free (json_str);
+      return -1;
+    }
+
+  g_free (json_str);
+
+  // Wait for Notus scanner to start or interrupt
+  while (!status)
+    {
+      err = mqtt_retrieve_message (&topic, &topic_len, &payload, &payload_len,
+                                   60000);
+      if (err == -1)
+        {
+          g_warning ("%s: Unable to retrieve status message from notus.",
+                     __func__);
+          return -1;
+        }
+      if (err == 1)
+        {
+          g_warning ("%s: Unablet to retrieve message. Timeout after 60s.",
+                     __func__);
+          return -1;
+        }
+
+      // Get status if it belongs to corresponding scan and host
+      // Else wait for next status message
+      status = get_status_of_table_driven_lsc_from_json (scan_id, ip_str,
+                                                         payload, payload_len);
+
+      g_free (topic);
+      g_free (payload);
+    }
+  // If started wait for it to finish or interrupt
+  if (!g_strcmp0 (status, "running"))
+    {
+      g_debug ("%s: table driven LSC with scan id %s succesfully started "
+               "for host %s",
+               __func__, scan_id, ip_str);
+      g_free (status);
+      status = NULL;
+      while (!status)
+        {
+          err = mqtt_retrieve_message (&topic, &topic_len, &payload,
+                                       &payload_len, 60000);
+          if (err == -1)
+            {
+              g_warning ("%s: Unable to retrieve status message from notus.",
+                         __func__);
+              return -1;
+            }
+          if (err == 1)
+            {
+              g_warning ("%s: Unablet to retrieve message. Timeout after 60s.",
+                         __func__);
+              return -1;
+            }
+
+          status = get_status_of_table_driven_lsc_from_json (
+            scan_id, ip_str, payload, payload_len);
+          g_free (topic);
+          g_free (payload);
+        }
+    }
+  else
+    {
+      g_warning ("%s: Unable to start lsc. Got status: %s", __func__, status);
+      g_free (status);
+      return -1;
+    }
+
+  if (g_strcmp0 (status, "finished"))
+    {
+      g_warning (
+        "%s: table driven lsc with scan id %s did not finish successfully "
+        "for host %s. Last status was %s",
+        __func__, scan_id, ip_str, status);
+      err = -1;
+    }
+  else
+    g_debug ("%s: table driven lsc with scan id %s succesfully finished "
+             "for host %s",
+             __func__, scan_id, ip_str);
+  g_free (status);
+  return err;
+}
+
+/**
  * @brief Launches a nvt. Respects safe check preference (i.e. does not try
  * @brief destructive nvt if save_checks is yes).
  *
  * Does not launch a plugin twice if !save_kb_replay.
  *
  * @return ERR_HOST_DEAD if host died, ERR_CANT_FORK if forking failed,
- *         0 otherwise.
+ *         ERR_NO_FREE_SLOT if the process table is full, 0 otherwise.
  */
 static int
 launch_plugin (struct scan_globals *globals, struct scheduler_plugin *plugin,
                struct in6_addr *ip, GSList *vhosts, kb_t kb, kb_t main_kb)
 {
-  int optimize = prefs_get_bool ("optimize_test"), pid, ret = 0;
+  int optimize = prefs_get_bool ("optimize_test");
+  int launch_error, pid, ret = 0;
   char *oid, *name, *error = NULL, ip_str[INET6_ADDRSTRLEN];
   nvti_t *nvti;
 
@@ -467,11 +610,13 @@ launch_plugin (struct scan_globals *globals, struct scheduler_plugin *plugin,
 
   /* Update vhosts list and start the plugin */
   check_new_vhosts ();
-  pid = plugin_launch (globals, plugin, ip, vhosts, kb, main_kb, nvti);
-  if (pid < 0)
+  launch_error = 0;
+  pid = plugin_launch (globals, plugin, ip, vhosts, kb, main_kb, nvti,
+                       &launch_error);
+  if (launch_error == ERR_NO_FREE_SLOT || launch_error == ERR_CANT_FORK)
     {
       plugin->running_state = PLUGIN_STATUS_UNRUN;
-      ret = ERR_CANT_FORK;
+      ret = launch_error;
       goto finish_launch_plugin;
     }
 
@@ -554,19 +699,33 @@ attack_host (struct scan_globals *globals, struct in6_addr *ip, GSList *vhosts,
                   comm_send_status_host_dead (main_kb, ip_str);
                   goto host_died;
                 }
+              else if (e == ERR_NO_FREE_SLOT)
+                {
+                  if (forks_retry < MAX_FORK_RETRIES)
+                    {
+                      forks_retry++;
+                      g_warning ("Launch failed for %s. No free slot available "
+                                 "in the internal process table for starting a "
+                                 "plugin.",
+                                 plugin->oid);
+                      fork_sleep (forks_retry);
+                      goto again;
+                    }
+                }
               else if (e == ERR_CANT_FORK)
                 {
                   if (forks_retry < MAX_FORK_RETRIES)
                     {
                       forks_retry++;
-                      g_debug ("fork() failed - sleeping %d seconds (%s)",
-                               forks_retry, strerror (errno));
+                      g_warning (
+                        "fork() failed for %s - sleeping %d seconds (%s)",
+                        plugin->oid, forks_retry, strerror (errno));
                       fork_sleep (forks_retry);
                       goto again;
                     }
                   else
                     {
-                      g_debug ("fork() failed too many times - aborting");
+                      g_warning ("fork() failed too many times - aborting");
                       goto host_died;
                     }
                 }
@@ -587,6 +746,21 @@ attack_host (struct scan_globals *globals, struct in6_addr *ip, GSList *vhosts,
         /* 50 milliseconds. */
         usleep (50000);
       pluginlaunch_wait_for_free_process (main_kb, kb);
+    }
+
+  if (prefs_get_bool ("table_driven_lsc"))
+    {
+      g_message ("Running LSC via Notus for %s", ip_str);
+      if (run_table_driven_lsc (globals->scan_id, kb, ip_str, NULL))
+        {
+          char buffer[2048];
+          snprintf (
+            buffer, sizeof (buffer),
+            "ERRMSG|||%s||| ||| ||| ||| Unable to launch table driven lsc",
+            ip_str);
+          kb_item_push_str (main_kb, "internal/results", buffer);
+          g_warning ("%s: Unable to launch table driven LSC", __func__);
+        }
     }
 
   pluginlaunch_wait (main_kb, kb);
@@ -1223,6 +1397,7 @@ attack_network (struct scan_globals *globals)
       if (test_alive_hosts_only)
         {
           struct in6_addr tmpaddr;
+          gvm_host_t *buf;
 
           while (1)
             {
@@ -1266,13 +1441,16 @@ attack_network (struct scan_globals *globals)
                 break;
             }
 
-          if (gvm_host_get_addr6 (host, &tmpaddr) == 0)
-            host = gvm_host_find_in_hosts (host, &tmpaddr, hosts);
+          if (host && gvm_host_get_addr6 (host, &tmpaddr) == 0)
+            {
+              buf = host;
+              host = gvm_host_find_in_hosts (host, &tmpaddr, hosts);
+              gvm_host_free (buf);
+              buf = NULL;
+            }
 
           if (host)
-            {
-              gvm_hosts_add (alive_hosts_list, host);
-            }
+            gvm_hosts_add (alive_hosts_list, gvm_duplicate_host (host));
           else
             g_debug ("%s: got NULL host, stop/finish scan", __func__);
         }
@@ -1338,7 +1516,7 @@ stop:
                gvm_hosts_count (hosts));
 
   gvm_hosts_free (hosts);
-  if (test_alive_hosts_only)
+  if (alive_hosts_list)
     gvm_hosts_free (alive_hosts_list);
 
   set_scan_status ("finished");

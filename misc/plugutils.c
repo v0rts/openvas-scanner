@@ -31,6 +31,7 @@
 #include <gvm/base/hosts.h>      // for g_vhost_t
 #include <gvm/base/networking.h> // for port_protocol_t
 #include <gvm/base/prefs.h>      // for prefs_get_bool
+#include <gvm/util/mqtt.h>       // for mqtt_reset
 #include <gvm/util/nvticache.h>  // for nvticache_initialized
 #include <stdio.h>               // for snprintf
 #include <stdlib.h>              // for exit
@@ -511,12 +512,12 @@ get_plugin_preference (const char *oid, const char *name, int pref_id)
   char prefix[1024], suffix[1024];
 
   prefs = preferences_get ();
-  if (!prefs || !nvticache_initialized () || !oid || (!name && pref_id < 1))
+  if (!prefs || !nvticache_initialized () || !oid || (!name && pref_id < 0))
     return NULL;
 
   g_hash_table_iter_init (&iter, prefs);
 
-  if (pref_id > 0)
+  if (pref_id >= 0)
     {
       snprintf (prefix, sizeof (prefix), "%s:%d:", oid, pref_id);
       while (g_hash_table_iter_next (&iter, &itername, &itervalue))
@@ -864,6 +865,7 @@ plug_fork_child (kb_t kb)
   if ((pid = fork ()) == 0)
     {
       sig_term (_exit);
+      mqtt_reset ();
       kb_lnk_reset (kb);
       nvticache_reset ();
       srand48 (getpid () + getppid () + time (NULL));
@@ -921,7 +923,10 @@ plug_get_key (struct script_infos *args, char *name, int *type, size_t *len,
         {
           if (type != NULL)
             *type = KB_TYPE_INT;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic warning "-Wdeprecated-declarations"
           ret = g_memdup (&res->v_int, sizeof (res->v_int));
+#pragma GCC diagnostic pop
         }
       else
         {
@@ -929,7 +934,10 @@ plug_get_key (struct script_infos *args, char *name, int *type, size_t *len,
             *type = KB_TYPE_STR;
           if (len)
             *len = res->len;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic warning "-Wdeprecated-declarations"
           ret = g_memdup (res->v_str, res->len + 1);
+#pragma GCC diagnostic pop
         }
       kb_item_free (res);
       return ret;
@@ -951,7 +959,10 @@ plug_get_key (struct script_infos *args, char *name, int *type, size_t *len,
             {
               if (type != NULL)
                 *type = KB_TYPE_INT;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic warning "-Wdeprecated-declarations"
               ret = g_memdup (&res->v_int, sizeof (res->v_int));
+#pragma GCC diagnostic pop
             }
           else
             {
@@ -959,7 +970,10 @@ plug_get_key (struct script_infos *args, char *name, int *type, size_t *len,
                 *type = KB_TYPE_STR;
               if (len)
                 *len = res->len;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic warning "-Wdeprecated-declarations"
               ret = g_memdup (res->v_str, res->len + 1);
+#pragma GCC diagnostic pop
             }
           kb_item_free (res_list);
           return ret;

@@ -26,6 +26,7 @@
 #include "nasl_crypto.h"
 #include "nasl_crypto2.h"
 #include "nasl_debug.h"
+#include "nasl_frame_forgery.h"
 #include "nasl_func.h"
 #include "nasl_global_ctxt.h"
 #include "nasl_host.h"
@@ -109,6 +110,9 @@ static init_func libfuncs[] = {
   {"recv_line", nasl_recv_line},
   {"send", nasl_send},
   {"socket_negotiate_ssl", nasl_socket_negotiate_ssl},
+  {"socket_check_ssl_safe_renegotiation",
+   nasl_socket_check_ssl_safe_renegotiation},
+  {"socket_ssl_do_handshake", nasl_socket_ssl_do_handshake},
   {"socket_get_cert", nasl_socket_get_cert},
   {"socket_get_ssl_version", nasl_socket_get_ssl_version},
   {"socket_get_ssl_ciphersuite", nasl_socket_get_ssl_ciphersuite},
@@ -134,6 +138,7 @@ static init_func libfuncs[] = {
   {"resolve_host_name", resolve_hostname},
   {"resolve_hostname_to_multiple_ips", resolve_hostname_to_multiple_ips},
   {"get_host_ip", get_host_ip},
+  {"get_local_mac_address_from_ip", nasl_get_local_mac_address_from_ip},
   {"same_host", nasl_same_host},
   {"TARGET_IS_IPV6", nasl_target_is_ipv6},
   {"get_host_open_port", get_host_open_port},
@@ -247,6 +252,7 @@ static init_func libfuncs[] = {
   {"forge_igmp_v6_packet", forge_igmp_v6_packet},
   {"send_packet", nasl_send_packet},
   {"send_v6packet", nasl_send_v6packet},
+  {"send_arp_request", nasl_send_arp_request},
   {"pcap_next", nasl_pcap_next},
   {"send_capture", nasl_send_capture},
   {"MD2", nasl_md2},
@@ -325,6 +331,7 @@ static init_func libfuncs[] = {
   {"ssh_get_server_banner", nasl_ssh_get_server_banner},
   {"ssh_get_auth_methods", nasl_ssh_get_auth_methods},
   {"ssh_get_host_key", nasl_ssh_get_host_key},
+  {"sftp_enabled_check", nasl_sftp_enabled_check},
 
 #ifdef HAVE_LIBKSBA
   {"cert_open", nasl_cert_open},
@@ -416,6 +423,7 @@ static struct
   {"ENCAPS_TLSv1", OPENVAS_ENCAPS_TLSv1},
   {"ENCAPS_TLSv11", OPENVAS_ENCAPS_TLSv11},
   {"ENCAPS_TLSv12", OPENVAS_ENCAPS_TLSv12},
+  {"ENCAPS_TLSv13", OPENVAS_ENCAPS_TLSv13},
   {"ENCAPS_TLScustom", OPENVAS_ENCAPS_TLScustom},
   {"ENCAPS_MAX", OPENVAS_ENCAPS_MAX},
   {"TH_FIN", TH_FIN},

@@ -63,6 +63,12 @@
 #include <time.h>
 #include <unistd.h>
 
+#undef G_LOG_DOMAIN
+/**
+ * @brief GLib logging domain.
+ */
+#define G_LOG_DOMAIN "lib  nasl"
+
 #ifndef DIM
 #define DIM(v) (sizeof (v) / sizeof ((v)[0]))
 #define DIMof(type, member) DIM (((type *) 0)->member)
@@ -70,7 +76,7 @@
 
 /* The type used to represent the time here is a string with a fixed
    length.  */
-#define ISOTIME_SIZE 19
+#define ISOTIME_SIZE 16
 typedef char my_isotime_t[ISOTIME_SIZE];
 
 /* Correction used to map to real Julian days. */
@@ -93,12 +99,12 @@ epoch2isotime (my_isotime_t timebuf, time_t atime)
     *timebuf = 0;
   else
     {
-      struct tm *tp;
+      struct tm tp;
 
-      tp = gmtime (&atime);
+      gmtime_r (&atime, &tp);
       if (snprintf (timebuf, ISOTIME_SIZE, "%04d%02d%02dT%02d%02d%02d",
-                    1900 + tp->tm_year, tp->tm_mon + 1, tp->tm_mday,
-                    tp->tm_hour, tp->tm_min, tp->tm_sec)
+                    1900 + tp.tm_year, tp.tm_mon + 1, tp.tm_mday, tp.tm_hour,
+                    tp.tm_min, tp.tm_sec)
           < 0)
         {
           *timebuf = '\0';
@@ -273,11 +279,21 @@ string2isotime (my_isotime_t atime, const char *string)
   atime[9] = string[11];
   atime[10] = string[12];
   if (string[13] != ':')
-    return 13;
+    {
+      atime[11] = '0';
+      atime[12] = '0';
+      atime[13] = '0';
+      atime[14] = '0';
+      return 13;
+    }
   atime[11] = string[14];
   atime[12] = string[15];
   if (string[16] != ':')
-    return 16;
+    {
+      atime[13] = '0';
+      atime[14] = '0';
+      return 16;
+    }
   atime[13] = string[17];
   atime[14] = string[18];
   return 19;

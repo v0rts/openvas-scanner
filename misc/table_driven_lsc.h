@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2021 Greenbone Networks GmbH
+/* Copyright (C) 2021 Greenbone Networks GmbH
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -18,39 +18,21 @@
  */
 
 /**
- * @file debug_utils.c
- * @brief Initialize sentry
+ * @file table_drive_lsc.h
+ * @brief Header file for module table_driven_lsc.
  */
 
-#include "debug_utils.h"
+#ifndef TABLE_DRIVEN_LSC_H
+#define TABLE_DRIVEN_LSC_H
 
-#include <gvm/base/logging.h>
-#include <stdio.h> /* for snprintf */
-#include <stdlib.h>
+#include <glib.h>
 
-/**
- * @brief Init sentry.
- *
- * @return 0 on success, -1 on error.
- */
-int
-init_sentry (void)
-{
-  char *sentry_dsn_openvas = NULL;
-  char version[96];
+gchar *
+make_table_driven_lsc_info_json_str (const char *, const char *, const char *,
+                                     const char *, const char *);
 
-  snprintf (version, sizeof (version), "openvas@%s", OPENVAS_VERSION);
+gchar *
+get_status_of_table_driven_lsc_from_json (const char *, const char *,
+                                          const char *, int);
 
-  sentry_dsn_openvas = getenv ("SENTRY_DSN_OPENVAS");
-  if (FALSE
-      == (gvm_has_sentry_support () && sentry_dsn_openvas
-          && *sentry_dsn_openvas))
-    {
-      return -1;
-    }
-  else
-    {
-      gvm_sentry_init (sentry_dsn_openvas, version);
-      return 0;
-    }
-}
+#endif // TABLE_DRIVEN_LSC_H

@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2021 Greenbone Networks GmbH
+/* Copyright (C) 2021 Greenbone Networks GmbH
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -18,39 +18,16 @@
  */
 
 /**
- * @file debug_utils.c
- * @brief Initialize sentry
+ * @file nasl_frame_forgery.h
+ * @brief Header file for module nasl_frame_forgery.
  */
 
-#include "debug_utils.h"
+#ifndef NASL_FRAME_FORGERY_H
+#define NASL_FRAME_FORGERY_H
 
-#include <gvm/base/logging.h>
-#include <stdio.h> /* for snprintf */
-#include <stdlib.h>
+#include "nasl_lex_ctxt.h"
 
-/**
- * @brief Init sentry.
- *
- * @return 0 on success, -1 on error.
- */
-int
-init_sentry (void)
-{
-  char *sentry_dsn_openvas = NULL;
-  char version[96];
+tree_cell *
+nasl_send_arp_request (lex_ctxt *);
 
-  snprintf (version, sizeof (version), "openvas@%s", OPENVAS_VERSION);
-
-  sentry_dsn_openvas = getenv ("SENTRY_DSN_OPENVAS");
-  if (FALSE
-      == (gvm_has_sentry_support () && sentry_dsn_openvas
-          && *sentry_dsn_openvas))
-    {
-      return -1;
-    }
-  else
-    {
-      gvm_sentry_init (sentry_dsn_openvas, version);
-      return 0;
-    }
-}
+#endif // NASL_FRAME_FORGERY_H

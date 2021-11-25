@@ -165,10 +165,16 @@ add_udp_data (struct script_infos *script_infos, int soc, char *data, int len)
 {
   GHashTable *udp_data = script_infos->udp_data;
   struct udp_record *data_record = g_malloc0 (sizeof (struct udp_record));
+#pragma GCC diagnostic push
+#pragma GCC diagnostic warning "-Wdeprecated-declarations"
   int *key = g_memdup (&soc, sizeof (int));
+#pragma GCC diagnostic pop
 
   data_record->len = len;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic warning "-Wdeprecated-declarations"
   data_record->data = g_memdup ((gconstpointer) data, (guint) len);
+#pragma GCC diagnostic pop
 
   if (udp_data == NULL)
     {
@@ -619,6 +625,67 @@ nasl_socket_negotiate_ssl (lex_ctxt *lexic)
   return retc;
 }
 
+/**
+ * @brief Check if Secure Renegotiation is supported in the server side.
+ * @naslfn{socket_check_ssl_safe_renegotiation}
+ *
+ * @naslnparam
+ *
+ * - @a socket An already stablished ssl/tls session.
+ *
+ * @naslret An 1 if supported, 0 otherwise. Null or -1 on error.
+ *
+ **/
+tree_cell *
+nasl_socket_check_ssl_safe_renegotiation (lex_ctxt *lexic)
+{
+  int soc, ret;
+  tree_cell *retc;
+  soc = get_int_var_by_name (lexic, "socket", -1);
+  if (soc < 0)
+    {
+      nasl_perror (lexic, "socket_get_cert: Erroneous socket value %d\n", soc);
+      return NULL;
+    }
+  ret = socket_ssl_safe_renegotiation_status (soc);
+
+  retc = alloc_typed_cell (CONST_INT);
+  retc->x.i_val = ret;
+  return retc;
+}
+
+/**
+ * @brief Do a re-handshake of the TLS/SSL protocol.
+ *
+ * @naslfn{socket_ssl_do_handshake}
+ *
+ * @naslnparam
+ *
+ * - @a socket An already stablished TLS/SSL session.
+ *
+ * @naslret An 1 on success, less than 0 on handshake error.
+ *          Null on nasl error.
+ *
+ * @param[in] lexic Lexical context of NASL interpreter.
+ **/
+tree_cell *
+nasl_socket_ssl_do_handshake (lex_ctxt *lexic)
+{
+  int soc, ret;
+  tree_cell *retc;
+  soc = get_int_var_by_name (lexic, "socket", -1);
+  if (soc < 0)
+    {
+      nasl_perror (lexic, "socket_get_cert: Erroneous socket value %d\n", soc);
+      return NULL;
+    }
+  ret = socket_ssl_do_handshake (soc);
+
+  retc = alloc_typed_cell (CONST_INT);
+  retc->x.i_val = ret;
+  return retc;
+}
+
 tree_cell *
 nasl_socket_get_cert (lex_ctxt *lexic)
 {
@@ -779,7 +846,10 @@ nasl_recv (lex_ctxt *lexic)
   if (new_len > 0)
     {
       tree_cell *retc = alloc_typed_cell (CONST_DATA);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic warning "-Wdeprecated-declarations"
       retc->x.str_val = g_memdup (data, new_len);
+#pragma GCC diagnostic pop
       retc->size = new_len;
       g_free (data);
       return retc;
@@ -848,7 +918,10 @@ nasl_recv_line (lex_ctxt *lexic)
 
   retc = alloc_typed_cell (CONST_DATA);
   retc->size = new_len;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic warning "-Wdeprecated-declarations"
   retc->x.str_val = g_memdup (data, new_len + 1);
+#pragma GCC diagnostic pop
 
   g_free (data);
 
@@ -1374,12 +1447,12 @@ nasl_get_sock_info (lex_ctxt *lexic)
  * This function is used to retrieve and verify a certificate from an
  * active socket. It requires the NASL socket number.
  *
- * @nasluparam
+ * @naslnparam
  *
- * - A NASL socket.
+ * - @a socket A NASL socket.
  *
- * @naslret 0 in case of successfully verification. A positive integer in
- * case of verification error or NULL on other errors.
+ * @naslret 0 in case of successful verification. A positive integer in
+ * case of a verification error or NULL on other errors.
  *
  * @param[in] lexic  Lexical context of the NASL interpreter.
  *

@@ -568,8 +568,20 @@ get_oid_name (const char *oid)
     return "dhpublicnumber";
   else if (!strcmp ("2.16.840.1.101.2.1.1.22", oid))
     return "id-keyExchangeAlgorithm";
+  else if (!strcmp ("1.2.840.10045.1.1", oid))
+    return "prime-field";
   else if (!strcmp ("1.2.840.10045.2.1", oid))
     return "id-ecPublicKey";
+  else if (!strcmp ("1.2.840.10045.4.1", oid))
+    return "ecdsa-with-SHA1";
+  else if (!strcmp ("1.2.840.10045.4.3.1", oid))
+    return "ecdsa-with-SHA224";
+  else if (!strcmp ("1.2.840.10045.4.3.2", oid))
+    return "ecdsa-with-SHA256";
+  else if (!strcmp ("1.2.840.10045.4.3.3", oid))
+    return "ecdsa-with-SHA384";
+  else if (!strcmp ("1.2.840.10045.4.3.4", oid))
+    return "ecdsa-with-SHA512";
   else if (!strcmp ("1.3.132.1.12", oid))
     return "id-ecDH";
   else if (!strcmp ("1.2.840.10045.2.13", oid))
@@ -634,6 +646,18 @@ get_oid_name (const char *oid)
     return "sect571k1";
   else if (!strcmp ("1.3.132.0.39", oid))
     return "sect571r1";
+  else if (!strcmp ("2.16.840.1.101.3.4.3.1", oid))
+    return "id-dsa-with-sha224";
+  else if (!strcmp ("2.16.840.1.101.3.4.3.2", oid))
+    return "id-dsa-with-sha256";
+  else if (!strcmp ("2.16.840.1.101.3.4.2.1", oid))
+    return "sha256";
+  else if (!strcmp ("2.16.840.1.101.3.4.2.2", oid))
+    return "sha384";
+  else if (!strcmp ("2.16.840.1.101.3.4.2.3", oid))
+    return "sha512";
+  else if (!strcmp ("2.16.840.1.101.3.4.2.4", oid))
+    return "sha224";
   else
     return NULL;
 }
@@ -736,6 +760,21 @@ get_name (const char *string)
  *                  DER encode certificate.
  *
  * - @a image       Return the entire certificate as binary data.
+ *
+ * - @a algorithm-name: Return the algorithm name. Get the OID of
+ *                      the digest algorithm and translated to a name
+ *                      from a list from Wireshark.
+ *                      See epan/dissectors/packet-pkcs1.c
+ *
+ * - @a modulus:     Return the RSA public key's modulus found in the
+ *                   structure of the given cert.
+ *
+ * - @a exponent:   Return the RSA public key's exponent found in
+ *                  the structure of the given cert.
+ *
+ * - @a key-size    Return the size to hold the parameters size in bits.
+ *                  For RSA the bits returned is the modulus.
+ *                  For DSA the bits returned are of the public exponent.
  *
  * @nasluparam
  *
@@ -910,7 +949,10 @@ nasl_cert_query (lex_ctxt *lexic)
 
       retc = alloc_typed_cell (CONST_DATA);
       retc->size = m.size;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic warning "-Wdeprecated-declarations"
       retc->x.str_val = g_memdup (m.data, m.size);
+#pragma GCC diagnostic pop
       gnutls_free (m.data);
       gnutls_free (e.data);
       gnutls_x509_crt_deinit (cert);
@@ -934,7 +976,10 @@ nasl_cert_query (lex_ctxt *lexic)
 
       retc = alloc_typed_cell (CONST_DATA);
       retc->size = e.size;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic warning "-Wdeprecated-declarations"
       retc->x.str_val = g_memdup (e.data, e.size);
+#pragma GCC diagnostic pop
       gnutls_free (m.data);
       gnutls_free (e.data);
       gnutls_x509_crt_deinit (cert);
