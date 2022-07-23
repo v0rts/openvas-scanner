@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Based on work Copyright (C) 2002 - 2004 Tenable Network Security
  *
  * SPDX-License-Identifier: GPL-2.0-only
@@ -22,6 +22,7 @@
 #include "exec.h"
 
 #include "../misc/plugutils.h"
+#include "lint.h"
 #include "nasl.h"
 #include "nasl_debug.h"
 #include "nasl_func.h"
@@ -49,7 +50,7 @@
 #define G_LOG_DOMAIN "lib  nasl"
 
 extern int
-naslparse (naslctxt *);
+naslparse (naslctxt *, int *);
 
 static int
 cell2bool (lex_ctxt *lexic, tree_cell *c)
@@ -1603,9 +1604,6 @@ nasl_exec (lex_ctxt *lexic, tree_cell *st)
     }
 }
 
-extern tree_cell *
-nasl_lint (lex_ctxt *, tree_cell *);
-
 /**
  * @brief Execute a NASL script.
  *
@@ -1626,7 +1624,7 @@ exec_nasl_script (struct script_infos *script_infos, int mode)
 {
   naslctxt ctx;
   nasl_func *pf;
-  int err = 0, to, process_id;
+  int err = 0, to;
   tree_cell *ret;
   lex_ctxt *lexic;
   gchar *old_dir;
@@ -1634,6 +1632,7 @@ exec_nasl_script (struct script_infos *script_infos, int mode)
   tree_cell tc;
   const char *str, *name = script_infos->name, *oid = script_infos->oid;
   gchar *short_name = g_path_get_basename (name);
+  int error_counter = 0;
 
   nasl_set_plugin_filename (short_name);
   g_free (short_name);
@@ -1666,9 +1665,10 @@ exec_nasl_script (struct script_infos *script_infos, int mode)
 
   if (init_nasl_ctx (&ctx, name) == 0)
     {
-      if (naslparse (&ctx))
+      err = naslparse (&ctx, &error_counter);
+      if (err != 0 || error_counter > 0)
         {
-          g_message ("%s: Parse error at or near line %d", name, ctx.line_nb);
+          g_message ("%s. There were %d parse errors.", name, error_counter);
           nasl_clean_ctx (&ctx);
           g_chdir (old_dir);
           g_free (old_dir);
@@ -1698,20 +1698,19 @@ exec_nasl_script (struct script_infos *script_infos, int mode)
 
   lexic->recv_timeout = to;
 
-  process_id = getpid ();
   if (mode & NASL_LINT)
     {
       /* ret is set to the number of errors the linter finds.
       ret will be overwritten with -1 if any errors occur in the steps
       after linting so we do not break other behaviour dependent on a
       negative return value when doing more than just linting. */
-      tree_cell *ret = nasl_lint (lexic, ctx.tree);
-      if (ret == NULL)
+      tree_cell *lintret = nasl_lint (lexic, ctx.tree);
+      if (lintret == NULL)
         err--;
-      else if (ret != FAKE_CELL && ret->x.i_val > 0)
+      else if (lintret != FAKE_CELL && lintret->x.i_val > 0)
         {
-          err = ret->x.i_val;
-          g_free (ret);
+          err = lintret->x.i_val;
+          g_free (lintret);
         }
     }
   else if (!(mode & NASL_EXEC_PARSE_ONLY))
@@ -1757,8 +1756,5 @@ exec_nasl_script (struct script_infos *script_infos, int mode)
 
   nasl_clean_ctx (&ctx);
   free_lex_ctxt (lexic);
-  if (process_id != getpid ())
-    exit (0);
-
   return err;
 }

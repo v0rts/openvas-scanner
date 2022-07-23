@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Portions Copyright (C) 2006 Software in the Public Interest, Inc.
  * Based on work Copyright (C) 1998 - 2006 Tenable Network Security, Inc.
  *
@@ -40,13 +40,13 @@
 #include "utils.h"
 
 #include <arpa/inet.h> /* for inet_ntoa() */
-#include <errno.h>     /* for errno() */
+#include <bsd/unistd.h>
+#include <errno.h> /* for errno() */
 #include <fcntl.h>
 #include <glib.h>
 #include <gvm/base/hosts.h>
 #include <gvm/base/networking.h>
-#include <gvm/base/prefs.h> /* for prefs_get() */
-#include <gvm/base/proctitle.h>
+#include <gvm/base/prefs.h>            /* for prefs_get() */
 #include <gvm/boreas/alivedetection.h> /* for start_alive_detection() */
 #include <gvm/boreas/boreas_io.h>      /* for get_host_from_queue() */
 #include <gvm/util/mqtt.h>
@@ -156,7 +156,7 @@ set_scan_status (char *status)
  * which is vulnerability tested. Launched is the number of plguins(VTs) which
  * got already started. Total is the total number of plugins which will be
  * started for the current host. But here we use the format "current_host/0/-1"
- * for implicit singalling that the host ist dead.
+ * for implicit singalling that the host is dead.
  *
  * @param main_kb Kb to use
  * @param ip_str str representation of host ip
@@ -221,8 +221,9 @@ message_to_client (kb_t kb, const char *msg, const char *ip_str,
 {
   char *buf;
 
-  buf = g_strdup_printf ("%s|||%s|||%s|||%s||| |||%s", type, ip_str ?: "",
-                         ip_str ?: "", port ?: " ", msg ?: "No error.");
+  buf = g_strdup_printf ("%s|||%s|||%s|||%s||| |||%s", type,
+                         ip_str ? ip_str : "", ip_str ? ip_str : "",
+                         port ? port : " ", msg ? msg : "No error.");
   kb_item_push_str (kb, "internal/results", buf);
   g_free (buf);
 }
@@ -418,7 +419,7 @@ run_table_driven_lsc (const char *scan_id, kb_t kb, const char *ip_str,
   /* Get the OS release. TODO: have a list with supported OS. */
   os_release = kb_item_get_str (kb, "ssh/login/release_notus");
   /* Get the package list. Currently only rpm support */
-  package_list = kb_item_get_str (kb, "ssh/login/rpms_notus");
+  package_list = kb_item_get_str (kb, "ssh/login/package_list_notus");
   if (!os_release || !package_list)
     return 0;
 
@@ -445,16 +446,10 @@ run_table_driven_lsc (const char *scan_id, kb_t kb, const char *ip_str,
     {
       err = mqtt_retrieve_message (&topic, &topic_len, &payload, &payload_len,
                                    60000);
-      if (err == -1)
+      if (err == -1 || err == 1)
         {
-          g_warning ("%s: Unable to retrieve status message from notus.",
-                     __func__);
-          return -1;
-        }
-      if (err == 1)
-        {
-          g_warning ("%s: Unablet to retrieve message. Timeout after 60s.",
-                     __func__);
+          g_warning ("%s: Unable to retrieve status message from notus. %s",
+                     __func__, err == 1 ? "Timeout after 60 s." : "");
           return -1;
         }
 
@@ -469,7 +464,7 @@ run_table_driven_lsc (const char *scan_id, kb_t kb, const char *ip_str,
   // If started wait for it to finish or interrupt
   if (!g_strcmp0 (status, "running"))
     {
-      g_debug ("%s: table driven LSC with scan id %s succesfully started "
+      g_debug ("%s: table driven LSC with scan id %s successfully started "
                "for host %s",
                __func__, scan_id, ip_str);
       g_free (status);
@@ -513,7 +508,7 @@ run_table_driven_lsc (const char *scan_id, kb_t kb, const char *ip_str,
       err = -1;
     }
   else
-    g_debug ("%s: table driven lsc with scan id %s succesfully finished "
+    g_debug ("%s: table driven lsc with scan id %s successfully finished "
              "for host %s",
              __func__, scan_id, ip_str);
   g_free (status);
@@ -552,17 +547,8 @@ launch_plugin (struct scan_globals *globals, struct scheduler_plugin *plugin,
     }
   if (scan_is_stopped ())
     {
-      if (nvti_category (nvti) != ACT_END)
-        {
-          plugin->running_state = PLUGIN_STATUS_DONE;
-          goto finish_launch_plugin;
-        }
-      else
-        {
-          name = nvticache_get_filename (oid);
-          g_message ("Stopped scan wrap-up: Launching %s (%s)", name, oid);
-          g_free (name);
-        }
+      plugin->running_state = PLUGIN_STATUS_DONE;
+      goto finish_launch_plugin;
     }
 
   if (prefs_get_bool ("safe_checks")
@@ -650,7 +636,7 @@ attack_host (struct scan_globals *globals, struct in6_addr *ip, GSList *vhosts,
   kb_item_set_int (kb, "internal/hostpid", getpid ());
   host_set_time (main_kb, ip_str, "HOST_START");
   kb_lnk_reset (main_kb);
-  proctitle_set ("openvas: testing %s", ip_str);
+  setproctitle ("openvas: testing %s", ip_str);
   kb_lnk_reset (kb);
 
   /* launch the plugins */
@@ -748,7 +734,8 @@ attack_host (struct scan_globals *globals, struct in6_addr *ip, GSList *vhosts,
       pluginlaunch_wait_for_free_process (main_kb, kb);
     }
 
-  if (prefs_get_bool ("table_driven_lsc"))
+  if (!scan_is_stopped () && prefs_get_bool ("table_driven_lsc")
+      && prefs_get_bool ("mqtt_enabled"))
     {
       g_message ("Running LSC via Notus for %s", ip_str);
       if (run_table_driven_lsc (globals->scan_id, kb, ip_str, NULL))
@@ -855,7 +842,7 @@ check_deprecated_prefs ()
       gchar *msg = NULL;
 
       msg = g_strdup_printf (
-        "The following provided settings are deprecated since the 21.10 "
+        "The following provided settings are deprecated since the 22.4 "
         "release and will be ignored: %s%s%s%s%s",
         source_iface ? "source_iface (task setting) " : "",
         ifaces_allow ? "ifaces_allow (user setting) " : "",
@@ -1159,7 +1146,7 @@ attack_network (struct scan_globals *globals)
   gvm_hosts_t *hosts;
   const gchar *port_range;
   int allow_simultaneous_ips;
-  kb_t host_kb, main_kb;
+  kb_t arg_host_kb, main_kb;
   GSList *unresolved;
   char buf[96];
 
@@ -1334,7 +1321,7 @@ attack_network (struct scan_globals *globals)
 
       do
         {
-          rc = kb_new (&host_kb, prefs_get ("db_address"));
+          rc = kb_new (&arg_host_kb, prefs_get ("db_address"));
           if (rc < 0 && rc != -2)
             {
               report_kb_failure (rc);
@@ -1351,16 +1338,16 @@ attack_network (struct scan_globals *globals)
 
       host_str = gvm_host_value_str (host);
       connect_main_kb (&main_kb);
-      if (hosts_new (host_str, host_kb, main_kb) < 0)
+      if (hosts_new (host_str, arg_host_kb, main_kb) < 0)
         {
-          kb_delete (host_kb);
+          kb_delete (arg_host_kb);
           g_free (host_str);
           goto scan_stop;
         }
 
       if (scan_is_stopped ())
         {
-          kb_delete (host_kb);
+          kb_delete (arg_host_kb);
           g_free (host_str);
           continue;
         }
@@ -1368,7 +1355,7 @@ attack_network (struct scan_globals *globals)
       args.host = host;
       args.globals = globals;
       args.sched = sched;
-      args.host_kb = host_kb;
+      args.host_kb = arg_host_kb;
       args.main_kb = main_kb;
 
     forkagain:
@@ -1397,7 +1384,7 @@ attack_network (struct scan_globals *globals)
       if (test_alive_hosts_only)
         {
           struct in6_addr tmpaddr;
-          gvm_host_t *buf;
+          gvm_host_t *alive_buf;
 
           while (1)
             {
@@ -1443,10 +1430,10 @@ attack_network (struct scan_globals *globals)
 
           if (host && gvm_host_get_addr6 (host, &tmpaddr) == 0)
             {
-              buf = host;
+              alive_buf = host;
               host = gvm_host_find_in_hosts (host, &tmpaddr, hosts);
-              gvm_host_free (buf);
-              buf = NULL;
+              gvm_host_free (alive_buf);
+              alive_buf = NULL;
             }
 
           if (host)

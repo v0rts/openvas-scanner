@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Based on work Copyright (C) 1998 - 2003 Renaud Deraison
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -26,6 +26,7 @@
 #include "plugutils.h"
 
 #include "network.h" // for OPENVAS_ENCAPS_IP
+#include "support.h" // for g_memdup2 workaround
 
 #include <errno.h>               // for errno
 #include <gvm/base/hosts.h>      // for g_vhost_t
@@ -82,7 +83,7 @@ plug_set_dep (struct script_infos *args, const char *depname)
     nvti_set_dependencies (n, depname);
 }
 
-void
+static void
 host_add_port_proto (struct script_infos *args, int portnum, char *proto)
 {
   char port_s[255];
@@ -145,7 +146,7 @@ kb_get_port_state_proto (kb_t kb, int portnum, char *proto)
   return kb_item_get_int (kb, port_s) > 0;
 }
 
-int
+static int
 host_get_port_state_proto (struct script_infos *args, int portnum, char *proto)
 {
   return kb_get_port_state_proto (args->key, portnum, proto);
@@ -397,6 +398,7 @@ proto_post_wrapped (const char *oid, struct script_infos *desc, int port,
   const char *hostname = "";
   char *buffer, *data, port_s[16] = "general";
   char ip_str[INET6_ADDRSTRLEN];
+  GError *err = NULL;
   GString *action_str;
   gsize length;
   kb_t kb;
@@ -421,10 +423,19 @@ proto_post_wrapped (const char *oid, struct script_infos *desc, int port,
     hostname = ((gvm_vhost_t *) desc->vhosts->data)->value;
   addr6_to_str (plug_get_host_ip (desc), ip_str);
   buffer = g_strdup_printf ("%s|||%s|||%s|||%s/%s|||%s|||%s|||%s",
-                            msg_type_to_str (msg_type), ip_str, hostname ?: " ",
-                            port_s, proto, oid, action_str->str, uri ?: "");
+                            msg_type_to_str (msg_type), ip_str,
+                            hostname ? hostname : " ", port_s, proto, oid,
+                            action_str->str, uri ? uri : "");
   /* Convert to UTF-8 before sending to Manager. */
-  data = g_convert (buffer, -1, "UTF-8", "ISO_8859-1", NULL, &length, NULL);
+  data = g_convert (buffer, -1, "UTF-8", "ISO_8859-1", NULL, &length, &err);
+  if (!data)
+    {
+      g_warning ("%s: Error converting to UTF-8: %s\nOriginal string: %s",
+                 __func__, err->message, buffer);
+      g_free (buffer);
+      g_string_free (action_str, TRUE);
+      return;
+    }
   kb = plug_get_results_kb (desc);
   kb_item_push_str (kb, "internal/results", data);
   g_free (data);
@@ -845,18 +856,6 @@ sig_n (int signo, void (*fnc) (int))
   sigaction (signo, &sa, (struct sigaction *) 0);
 }
 
-static void
-sig_term (void (*fcn) ())
-{
-  sig_n (SIGTERM, fcn);
-}
-
-static void
-sig_chld (void (*fcn) ())
-{
-  sig_n (SIGCHLD, fcn);
-}
-
 static int
 plug_fork_child (kb_t kb)
 {
@@ -864,7 +863,7 @@ plug_fork_child (kb_t kb)
 
   if ((pid = fork ()) == 0)
     {
-      sig_term (_exit);
+      sig_n (SIGTERM, _exit);
       mqtt_reset ();
       kb_lnk_reset (kb);
       nvticache_reset ();
@@ -923,10 +922,7 @@ plug_get_key (struct script_infos *args, char *name, int *type, size_t *len,
         {
           if (type != NULL)
             *type = KB_TYPE_INT;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic warning "-Wdeprecated-declarations"
-          ret = g_memdup (&res->v_int, sizeof (res->v_int));
-#pragma GCC diagnostic pop
+          ret = g_memdup2 (&res->v_int, sizeof (res->v_int));
         }
       else
         {
@@ -934,17 +930,16 @@ plug_get_key (struct script_infos *args, char *name, int *type, size_t *len,
             *type = KB_TYPE_STR;
           if (len)
             *len = res->len;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic warning "-Wdeprecated-declarations"
-          ret = g_memdup (res->v_str, res->len + 1);
-#pragma GCC diagnostic pop
+
+          ret = g_malloc0 (res->len + 1);
+          memcpy (ret, res->v_str, res->len + 1);
         }
       kb_item_free (res);
       return ret;
     }
 
   /* More than  one value - we will fork() then */
-  sig_chld (plug_get_key_sigchld);
+  sig_n (SIGCHLD, plug_get_key_sigchld);
   res_list = res;
   while (res)
     {
@@ -959,10 +954,7 @@ plug_get_key (struct script_infos *args, char *name, int *type, size_t *len,
             {
               if (type != NULL)
                 *type = KB_TYPE_INT;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic warning "-Wdeprecated-declarations"
-              ret = g_memdup (&res->v_int, sizeof (res->v_int));
-#pragma GCC diagnostic pop
+              ret = g_memdup2 (&res->v_int, sizeof (res->v_int));
             }
           else
             {
@@ -970,10 +962,9 @@ plug_get_key (struct script_infos *args, char *name, int *type, size_t *len,
                 *type = KB_TYPE_STR;
               if (len)
                 *len = res->len;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic warning "-Wdeprecated-declarations"
-              ret = g_memdup (res->v_str, res->len + 1);
-#pragma GCC diagnostic pop
+
+              ret = g_malloc0 (res->len + 1);
+              memcpy (ret, res->v_str, res->len + 1);
             }
           kb_item_free (res_list);
           return ret;

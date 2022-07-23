@@ -1,4 +1,4 @@
-/* Copyright (C) 2013-2021 Greenbone Networks GmbH
+/* Copyright (C) 2013-2022 Greenbone Networks GmbH
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -22,6 +22,7 @@
  * @brief Source of the NASL linter of OpenVAS.
  */
 
+#include "lint.h"
 #include "nasl.h" /* exec_nasl_script */
 
 #include <gio/gio.h> /* g_file_... */
@@ -60,7 +61,7 @@ get_DIS_from_filename (const gchar *filename)
  * @brief Process a file through the linter
  * @param filepath the path of the file to be processed
  * @param mode,script_args The parameters to be given to the linter
- * @return Number of errors in script
+ * @return 0 if no error was found, 1 if errors were found.
  */
 static int
 process_file (const gchar *filepath, int mode, struct script_infos *script_args)
@@ -72,10 +73,12 @@ process_file (const gchar *filepath, int mode, struct script_infos *script_args)
   ret = exec_nasl_script (script_args, mode);
   if (ret != 0)
     {
-      g_print ("Error while processing %s.\n", filepath);
-      if (ret == -1)
-        return 1;
-      return ret;
+      // Although there is a technical difference between negative and
+      // positive ret value we do not make a distinction in this error message
+      // because details are already provided in exec_nasl_script()
+      g_print ("%d errors while processing %s.\n", ret == -1 ? 1 : ret,
+               filepath);
+      return 1;
     }
   return 0;
 }
@@ -85,7 +88,7 @@ process_file (const gchar *filepath, int mode, struct script_infos *script_args)
  * @param list_file the path to a text file containing path to the files to
  *        process, one per line
  * @param mode,script_args Parameters for the linter
- * @return The amount of errors found in the given scripts
+ * @return The amount of scripts with errors
  */
 static int
 process_file_list (const gchar *list_file, int mode,
@@ -123,7 +126,7 @@ process_file_list (const gchar *list_file, int mode,
  * @brief Process each given files through the linter
  * @param files The path to the files to be processed
  * @param mode,script_args Parameters to be given to the linter
- * @return The amount of errors found in the given scripts
+ * @return The amount scripts with errors
  */
 static int
 process_files (const gchar **files, int mode, struct script_infos *script_args)
@@ -162,13 +165,16 @@ main (int argc, char **argv)
 {
   int mode = 0;
   int err = 0;
+  int fflag = 0;
   static gboolean debug = FALSE;
   static gchar *include_dir = NULL;
   static gchar *nvt_file_list = NULL;
+  static unsigned char strict_includes = 0;
   static const gchar **nvt_files = NULL;
   struct script_infos *script_infos = g_malloc0 (sizeof (struct script_infos));
   GError *error = NULL;
   GOptionContext *option_context;
+
   static GOptionEntry entries[] = {
     {"debug", 'd', 0, G_OPTION_ARG_NONE, &debug, "Output debug log messages.",
      NULL},
@@ -178,6 +184,8 @@ main (int argc, char **argv)
      "Search for includes in <dir>", "<dir>"},
     {G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &nvt_files,
      "Absolute path to one or more nasl scripts", "NASL_FILE..."},
+    {"strict-includes", 0, 0, G_OPTION_ARG_NONE, &strict_includes,
+     "Enables check for strict include order.", NULL},
     {NULL, 0, 0, 0, NULL, NULL, NULL}};
 
   option_context =
@@ -188,6 +196,8 @@ main (int argc, char **argv)
       g_error ("%s\n\n", error->message);
     }
   g_option_context_free (option_context);
+  fflag |= strict_includes;
+  nasl_lint_feature_flags (fflag);
 
   mode |= NASL_COMMAND_LINE;
   /* signing mode */
@@ -221,7 +231,7 @@ main (int argc, char **argv)
   if (nvt_files != NULL)
     err += process_files (nvt_files, mode, script_infos);
 
-  g_print ("%d errors found\n", err);
+  g_print ("%d scripts with one or more errors found\n", err);
 
   g_free (script_infos);
 

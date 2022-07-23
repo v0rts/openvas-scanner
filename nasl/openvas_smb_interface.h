@@ -1,4 +1,4 @@
-/* Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Copyright (C) 2009-2022 Greenbone Networks GmbH
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -44,7 +44,5 @@ char *
 smb_file_GroupSID (SMB_HANDLE, const char *);
 char *
 smb_file_TrusteeRights (SMB_HANDLE, const char *);
-int
-wincmd (int argc, char *argv[], char **res);
 
 #endif

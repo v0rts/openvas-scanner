@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Portions Copyright (C) 2006 Software in the Public Interest, Inc.
  * Based on work Copyright (C) 1998 - 2006 Tenable Network Security, Inc.
  *
@@ -245,7 +245,7 @@ plugins_scheduler_enable (plugins_scheduler_t sched, const char *oid_list,
   return error_counter;
 }
 
-int
+static int
 find_plugin_in_deps (GHashTable *checked, struct scheduler_plugin **array,
                      int pos)
 {
@@ -272,7 +272,7 @@ find_plugin_in_deps (GHashTable *checked, struct scheduler_plugin **array,
   return -1;
 }
 
-int
+static int
 check_dependency_cycles (plugins_scheduler_t sched)
 {
   int i, j;
@@ -325,7 +325,10 @@ plugins_scheduler_init (const char *plugins_list, int autoload, int *error)
       plugins_scheduler_free (ret);
       return NULL;
     }
+
+#ifdef __GLIBC__
   malloc_trim (0);
+#endif
   return ret;
 }
 
@@ -427,7 +430,9 @@ scheduler_phase_cleanup (plugins_scheduler_t sched, int start, int end)
           element = element->next;
         }
     }
+#ifdef __GLIBC__
   malloc_trim (0);
+#endif
 }
 
 struct scheduler_plugin *
@@ -509,7 +514,7 @@ plugins_scheduler_stop (plugins_scheduler_t sched)
   sched->stopped = 1;
 }
 
-void
+static void
 scheduler_plugin_free (void *data)
 {
   struct scheduler_plugin *plugin;

@@ -105,8 +105,10 @@ typedef struct TC
 {
   short type;
   short line_nb;
+  char *name;
   short ref_count; /* Cell is freed when count reaches zero */
   int size;
+  int include_order;
   union
   {
     char *str_val;
@@ -122,7 +124,7 @@ typedef struct TC
 tree_cell *
 alloc_expr_cell (int, int, tree_cell *, tree_cell *);
 tree_cell *
-alloc_RE_cell (int, int, tree_cell *, char *);
+alloc_RE_cell (int, int, tree_cell *, char *, int *);
 tree_cell *
 alloc_typed_cell (int);
 int

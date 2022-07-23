@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Based on work Copyright (C) 2002 - 2004 Tenable Network Security
  *
  * SPDX-License-Identifier: GPL-2.0-only
@@ -398,23 +398,22 @@ tree_cell *
 nasl_tolower (lex_ctxt *lexic)
 {
   tree_cell *retc;
-  char *str = get_str_var_by_num (lexic, 0);
+  char *str = get_str_var_by_num (lexic, 0), *ret;
   int str_len = get_var_size_by_num (lexic, 0);
   int i;
 
   if (str == NULL)
     return NULL;
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic warning "-Wdeprecated-declarations"
-  str = g_memdup (str, str_len + 1);
-#pragma GCC diagnostic pop
+  ret = g_malloc0 (str_len + 1);
+  memcpy (ret, str, str_len + 1);
+
   for (i = 0; i < str_len; i++)
-    str[i] = tolower (str[i]);
+    ret[i] = tolower (ret[i]);
 
   retc = alloc_typed_cell (CONST_DATA);
   retc->size = str_len;
-  retc->x.str_val = str;
+  retc->x.str_val = ret;
   return retc;
 }
 
@@ -423,34 +422,42 @@ tree_cell *
 nasl_toupper (lex_ctxt *lexic)
 {
   tree_cell *retc;
-  char *str = get_str_var_by_num (lexic, 0);
+  char *str = get_str_var_by_num (lexic, 0), *ret;
   int str_len = get_var_size_by_num (lexic, 0);
   int i;
 
   if (str == NULL)
     return NULL;
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic warning "-Wdeprecated-declarations"
-  str = g_memdup (str, str_len + 1);
-#pragma GCC diagnostic pop
+  ret = g_malloc0 (str_len + 1);
+  memcpy (ret, str, str_len + 1);
+
   for (i = 0; i < str_len; i++)
-    str[i] = toupper (str[i]);
+    ret[i] = toupper (ret[i]);
 
   retc = alloc_typed_cell (CONST_DATA);
   retc->size = str_len;
-  retc->x.str_val = str;
+  retc->x.str_val = ret;
   return retc;
 }
 
 /*---------------------------------------------------------------------*/
 
-/*
- * regex syntax :
+/**
+ * @brief Matches a string against a regular expression.
+ * @naslfn{egrep}
  *
- *	ereg(pattern, string)
+ * @naslnparam
+ * - @a string  String to search the pattern in
+ * - @a pattern the patern that should be matched
+ * - @a icase   case insensitive flag
+ * - @a rnul    replace the null char in the string. Default TRUE.
+ * - @a multiline Is FALSE by default (string is truncated at the first
+ *                “end of line”), and can be set to TRUE for multiline search.
+ * @naslret The first found pattern.
+ *
+ * @param[in] lexic Lexical context of NASL interpreter.
  */
-
 tree_cell *
 nasl_ereg (lex_ctxt *lexic)
 {
@@ -458,6 +465,8 @@ nasl_ereg (lex_ctxt *lexic)
   char *string = get_str_var_by_name (lexic, "string");
   int icase = get_int_var_by_name (lexic, "icase", 0);
   int multiline = get_int_var_by_name (lexic, "multiline", 0);
+  int replace_nul = get_int_var_by_name (lexic, "rnul", 1);
+  int max_size = get_var_size_by_name (lexic, "string");
   char *s;
   int copt = 0;
   tree_cell *retc;
@@ -477,7 +486,12 @@ nasl_ereg (lex_ctxt *lexic)
     }
 
   retc = alloc_typed_cell (CONST_INT);
-  string = g_strdup (string);
+
+  if (replace_nul)
+    string = g_regex_escape_nul (string, max_size);
+  else
+    string = g_strdup (string);
+
   if (multiline)
     s = NULL;
   else
@@ -557,7 +571,7 @@ _regreplace (const char *pattern, const char *replace, const char *string,
              1) find out how long the string will be, and allocate buf
              2) copy the part before match, replacement and backrefs to buf
 
-             Jaakko Hyv�tti <Jaakko.Hyvatti@iki.fi>
+             Jaakko Hyv?tti <Jaakko.Hyvatti@iki.fi>
            */
 
           new_l = strlen (buf) + subs[0].rm_so; /* part before the match */
@@ -650,6 +664,21 @@ _regreplace (const char *pattern, const char *replace, const char *string,
   return (buf);
 }
 
+/**
+ * @brief Search for a pattern in a string and replace it
+ * @naslfn{ereg_replace}
+ *
+ * @naslnparam
+ * - @a string  String to search the pattern in
+ * - @a pattern patern to search in the string for
+ * - @a replace string to replace the pattern with
+ * - @a icase   case insensitive flag
+ * - @a rnul    replace the null char in the string. Default TRUE.
+ *
+ * @naslret The new string with the pattern replaced with replace
+ *
+ * @param[in] lexic Lexical context of NASL interpreter.
+ */
 tree_cell *
 nasl_ereg_replace (lex_ctxt *lexic)
 {
@@ -657,6 +686,9 @@ nasl_ereg_replace (lex_ctxt *lexic)
   char *replace = get_str_var_by_name (lexic, "replace");
   char *string = get_str_var_by_name (lexic, "string");
   int icase = get_int_var_by_name (lexic, "icase", 0);
+  int replace_nul = get_int_var_by_name (lexic, "rnul", 1);
+  int max_size = get_var_size_by_name (lexic, "string");
+
   char *r;
   tree_cell *retc;
 
@@ -669,6 +701,11 @@ nasl_ereg_replace (lex_ctxt *lexic)
     }
   if (string == NULL)
     return NULL;
+
+  if (replace_nul)
+    string = g_regex_escape_nul (string, max_size);
+  else
+    string = g_strdup (string);
 
   r = _regreplace (pattern, replace, string, icase, 1);
   if (r == NULL)
@@ -683,10 +720,19 @@ nasl_ereg_replace (lex_ctxt *lexic)
 
 /*---------------------------------------------------------------------*/
 
-/*
- * regex syntax :
+/**
+ * @brief looks for a pattern in a string, line by line.
+ * @naslfn{egrep}
  *
- *	egrep(pattern, string)
+ * @naslnparam
+ * - @a string  String to search the pattern in
+ * - @a pattern the patern that should be matched
+ * - @a icase   case insensitive flag
+ * - @a rnul    replace the null char in the string. Default TRUE.
+ *
+ * @naslret  The concatenation of all lines that match. Null otherwise.
+ *
+ * @param[in] lexic Lexical context of NASL interpreter.
  */
 tree_cell *
 nasl_egrep (lex_ctxt *lexic)
@@ -694,6 +740,7 @@ nasl_egrep (lex_ctxt *lexic)
   char *pattern = get_str_var_by_name (lexic, "pattern");
   char *string = get_str_var_by_name (lexic, "string");
   int icase = get_int_var_by_name (lexic, "icase", 0);
+  int replace_nul = get_int_var_by_name (lexic, "rnul", 1);
   tree_cell *retc;
   regex_t re;
   regmatch_t subs[NS];
@@ -714,7 +761,10 @@ nasl_egrep (lex_ctxt *lexic)
     copt = 0;
 
   rets = g_malloc0 (max_size + 2);
-  string = g_strdup (string);
+  if (replace_nul)
+    string = g_regex_escape_nul (string, max_size);
+  else
+    string = g_strdup (string);
 
   s = string;
   while (s[0] == '\n')
@@ -738,15 +788,15 @@ nasl_egrep (lex_ctxt *lexic)
 
         if (regexec (&re, s, (size_t) NS, subs, 0) == 0)
           {
-            char *t = strchr (s, '\n');
+            char *rt = strchr (s, '\n');
 
-            if (t != NULL)
-              t[0] = '\0';
+            if (rt != NULL)
+              rt[0] = '\0';
 
             strcat (rets, s);
             strcat (rets, "\n");
-            if (t != NULL)
-              t[0] = '\n';
+            if (rt != NULL)
+              rt[0] = '\n';
           }
 
         regfree (&re);
@@ -800,6 +850,7 @@ nasl_egrep (lex_ctxt *lexic)
  * - @a string A string
  * - @a icase Boolean, for case sensitve
  * - @a find_all Boolean, to find all matches
+ * - @a rnul replace the null char in the string. Default TRUE.
  *
  * @naslret An array with the first match (find_all: False)
  *          or an array with all matches (find_all: TRUE).
@@ -815,6 +866,8 @@ nasl_eregmatch (lex_ctxt *lexic)
   char *string = get_str_var_by_name (lexic, "string");
   int icase = get_int_var_by_name (lexic, "icase", 0);
   int find_all = get_int_var_by_name (lexic, "find_all", 0);
+  int replace_nul = get_int_var_by_name (lexic, "rnul", 1);
+  int max_size = get_var_size_by_name (lexic, "string");
   int copt = 0;
   tree_cell *retc;
   regex_t re;
@@ -827,6 +880,11 @@ nasl_eregmatch (lex_ctxt *lexic)
 
   if (pattern == NULL || string == NULL)
     return NULL;
+
+  if (replace_nul)
+    string = g_regex_escape_nul (string, max_size);
+  else
+    string = g_strdup (string);
 
   if (regcomp (&re, pattern, REG_EXTENDED | copt))
     {
@@ -1254,10 +1312,10 @@ nasl_strstr (lex_ctxt *lexic)
 
   retc = alloc_typed_cell (CONST_DATA);
   retc->size = sz_a - (c - a);
-#pragma GCC diagnostic push
-#pragma GCC diagnostic warning "-Wdeprecated-declarations"
-  retc->x.str_val = g_memdup (c, retc->size + 1);
-#pragma GCC diagnostic pop
+
+  retc->x.str_val = g_malloc0 (retc->size + 1);
+  memcpy (retc->x.str_val, c, retc->size + 1);
+
   return retc;
 }
 

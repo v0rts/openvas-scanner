@@ -1,4 +1,4 @@
-/* Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Copyright (C) 2009-2022 Greenbone Networks GmbH
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -56,7 +56,7 @@
 /**
  * Returns 0 if any alphabets are present
  */
-int
+static int
 check_alpha (char *val)
 {
   int i, val_len;
@@ -77,7 +77,7 @@ check_alpha (char *val)
 /**
  * Convert string to unsign int 32 bit
  */
-uint32_t
+static uint32_t
 stoi_uint32_t (char *s)
 {
   uint32_t v;
@@ -88,7 +88,7 @@ stoi_uint32_t (char *s)
 /**
  * Convert string to unsign int 64 bit
  */
-uint64_t
+static uint64_t
 stoi_uint64_t (char *s)
 {
   uint64_t v;
@@ -150,6 +150,7 @@ nasl_wmi_connect (lex_ctxt *lexic)
   IMPORT (username);
   IMPORT (password);
   IMPORT (ns);
+  IMPORT (options);
 
   if (ns == NULL)
     ns = "root\\cimv2";
@@ -172,7 +173,7 @@ nasl_wmi_connect (lex_ctxt *lexic)
   argv[0] = g_strdup ("wmic");
   argv[1] = g_strdup ("-U");
   argv[2] = g_strdup_printf ("%s%%%s", username, password);
-  argv[3] = g_strdup_printf ("//%s", ip);
+  argv[3] = g_strdup_printf ("//%s%s", ip, options ? options : "");
   argv[4] = g_strdup (ns);
   g_free (ip);
 
@@ -292,6 +293,8 @@ nasl_wmi_connect_rsop (lex_ctxt *lexic)
   char *ip;
   IMPORT (username);
   IMPORT (password);
+  IMPORT (options);
+
   char *argv[4];
   WMI_HANDLE handle;
   int argc = 4;
@@ -314,7 +317,7 @@ nasl_wmi_connect_rsop (lex_ctxt *lexic)
   argv[0] = g_strdup ("wmic");
   argv[1] = g_strdup ("-U");
   argv[2] = g_strdup_printf ("%s%%%s", username, password);
-  argv[3] = g_strdup_printf ("//%s", ip);
+  argv[3] = g_strdup_printf ("//%s%s", ip, options ? options : "");
   g_free (ip);
 
   tree_cell *retc = alloc_typed_cell (CONST_INT);
@@ -403,6 +406,8 @@ nasl_wmi_connect_reg (lex_ctxt *lexic)
   char *ip;
   IMPORT (username);
   IMPORT (password);
+  IMPORT (options);
+
   char *argv[4];
   WMI_HANDLE handle;
   int argc = 4;
@@ -425,7 +430,7 @@ nasl_wmi_connect_reg (lex_ctxt *lexic)
   argv[0] = g_strdup ("wmic");
   argv[1] = g_strdup ("-U");
   argv[2] = g_strdup_printf ("%s%%%s", username, password);
-  argv[3] = g_strdup_printf ("//%s", ip);
+  argv[3] = g_strdup_printf ("//%s%s", ip, options ? options : "");
   g_free (ip);
 
   tree_cell *retc = alloc_typed_cell (CONST_INT);

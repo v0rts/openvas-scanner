@@ -1,4 +1,4 @@
-/* Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Copyright (C) 2009-2022 Greenbone Networks GmbH
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -16,6 +16,8 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+
+#include "nasl_signature.h"
 
 #include "nasl_debug.h"
 #include "nasl_func.h"

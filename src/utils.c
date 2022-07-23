@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Portions Copyright (C) 2006 Software in the Public Interest, Inc.
  * Based on work Copyright (C) 1998 - 2006 Tenable Network Security, Inc.
  *
@@ -22,6 +22,8 @@
  * @file utils.c
  * @brief A bunch of miscellaneous functions, mostly file conversions.
  */
+
+#include "utils.h"
 
 #include "../misc/scanneraux.h" /* for struct scan_globals */
 

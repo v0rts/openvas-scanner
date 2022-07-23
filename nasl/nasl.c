@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Based on work Copyright (C) 2002 - 2005 Tenable Network Security
  *
  * SPDX-License-Identifier: GPL-2.0-only
@@ -60,7 +60,7 @@
 extern char *
 nasl_version (void);
 
-void
+static void
 sighandler ()
 {
   exit (0);
@@ -74,7 +74,7 @@ my_gnutls_log_func (int level, const char *text)
     putc ('\n', stderr);
 }
 
-struct script_infos *
+static struct script_infos *
 init (struct in6_addr *ip, GSList *vhosts, kb_t kb)
 {
   struct script_infos *infos = g_malloc0 (sizeof (struct script_infos));
@@ -245,7 +245,7 @@ main (int argc, char **argv)
       else
         putchar ('\n');
       printf ("Copyright (C) 2002 - 2004 Tenable Network Security\n");
-      printf ("Copyright (C) 2021 Greenbone Networks GmbH\n\n");
+      printf ("Copyright (C) 2022 Greenbone Networks GmbH\n\n");
       exit (0);
     }
   if (nasl_debug)
@@ -330,7 +330,7 @@ main (int argc, char **argv)
       add_nasl_inc_dir (include_dir);
     }
 
-  prefs_config (config_file ?: OPENVAS_CONF);
+  prefs_config (config_file ? config_file : OPENVAS_CONF);
 
   if (prefs_get ("vendor_version") != NULL)
     vendor_version_set (prefs_get ("vendor_version"));
@@ -349,21 +349,20 @@ main (int argc, char **argv)
     {
       struct in6_addr ip6;
       kb_t kb;
-      int rc, i = 0;
+      int rc;
 
       if (prefs_get_bool ("expand_vhosts"))
         gvm_host_add_reverse_lookup (host);
       gvm_vhosts_exclude (host, prefs_get ("exclude_hosts"));
       gvm_host_get_addr6 (host, &ip6);
-      rc = kb_new (&kb, prefs_get ("db_address") ?: KB_PATH_DEFAULT);
+      rc = kb_new (&kb, prefs_get ("db_address") ? prefs_get ("db_address")
+                                                 : KB_PATH_DEFAULT);
       if (rc)
         exit (1);
 
       script_infos = init (&ip6, host->vhosts, kb);
-      while (nasl_filenames[i])
+      for (int i = 0; nasl_filenames[i] != NULL; i++)
         {
-          pid_t pid;
-
           script_infos->name = nasl_filenames[i];
           if (both_modes || with_safe_checks)
             {
@@ -371,7 +370,6 @@ main (int argc, char **argv)
               if (!nvti)
                 {
                   err++;
-                  i++;
                   continue;
                 }
               else if (with_safe_checks
@@ -380,7 +378,6 @@ main (int argc, char **argv)
                   printf ("%s isn't safe\n", nasl_filenames[i]);
                   nvti_free (nvti);
                   err++;
-                  i++;
                   continue;
                 }
               nvti_free (nvti);
@@ -403,26 +400,8 @@ main (int argc, char **argv)
                 }
             }
 
-          if ((pid = fork ()) == 0)
-            {
-              if (exec_nasl_script (script_infos, mode) < 0)
-                exit (1);
-              else
-                exit (0);
-            }
-          else if (pid < 0)
-            {
-              fprintf (stderr, "fork(): %s\n", strerror (errno));
-              exit (1);
-            }
-          else
-            {
-              int status;
-              waitpid (pid, &status, 0);
-              if (status)
-                err++;
-            }
-          i++;
+          if (exec_nasl_script (script_infos, mode) < 0)
+            err++;
         }
       g_free (script_infos->globals);
       g_free (script_infos);

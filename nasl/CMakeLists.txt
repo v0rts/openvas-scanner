@@ -1,4 +1,4 @@
-# Copyright (C) 2009-2021 Greenbone Networks GmbH
+# Copyright (C) 2009-2022 Greenbone Networks GmbH
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
@@ -51,35 +51,10 @@ endif (NOT PKG_CONFIG_FOUND)
 pkg_check_modules (GLIB REQUIRED glib-2.0>=2.42)
 pkg_check_modules (GIO REQUIRED gio-2.0)
 pkg_check_modules (GNUTLS REQUIRED gnutls>=3.2.15)
-pkg_check_modules (LIBGVM_BASE REQUIRED libgvm_base>=21.10)
-pkg_check_modules (LIBGVM_UTIL REQUIRED libgvm_util>=21.10)
+pkg_check_modules (LIBGVM_BASE REQUIRED libgvm_base>=22.4)
+pkg_check_modules (LIBGVM_UTIL REQUIRED libgvm_util>=22.4)
 
 pkg_check_modules (OPENVAS_WMICLIENT libopenvas_wmiclient>=1.0.5)
-pkg_check_modules (OPENVAS_WINCMD libopenvas_wincmd>=1.0.5)
-
-## Check for libnet
-message (STATUS "Looking for libnet...")
-find_library (NET net)
-message (STATUS "Looking for net... ${NET}")
-if (NOT NET)
-  message (SEND_ERROR "The net library is required.")
-endif (NOT NET)
-message (STATUS "Looking for libnet-config...")
-find_program (LIBNET_CONFIG libnet-config)
-
-if (LIBNET_CONFIG)
-  message (STATUS "Looking for libnet-config... ${LIBNET_CONFIG}")
-  execute_process (COMMAND libnet-config --libs
-    OUTPUT_VARIABLE LIBNET_LDFLAGS
-    OUTPUT_STRIP_TRAILING_WHITESPACE)
-  execute_process (COMMAND libnet-config --cflags
-    OUTPUT_VARIABLE LIBNET_CFLAGS
-    OUTPUT_STRIP_TRAILING_WHITESPACE)
-else (LIBNET_CONFIG)
-  message (STATUS "libnet-config not found, using defaults...")
-  set (LIBNET_LDFLAGS "-L/usr/lib -lnet")
-  set (LIBNET_CFLAGS "-I/usr/include")
-endif (LIBNET_CONFIG)
 
 # for 'nasl' binary
 pkg_check_modules (LIBSSH REQUIRED libssh>=0.6.0)
@@ -190,7 +165,7 @@ endif (NOT BISON_FOUND)
 set (FILES arc4.c capture_packet.c charcnv.c exec.c genrand.c hmacmd5.c
      iconv.c lint.c md4.c md5.c nasl.c nasl_builtin_find_service.c
      nasl_builtin_openvas_tcp_scanner.c nasl_builtin_synscan.c
-     nasl_cmd_exec.c nasl_crypto2.c nasl_frame_forgery.c nasl_snmp.c nasl_ssh.c
+     nasl_cmd_exec.c nasl_crypt_helper.c nasl_crypto2.c nasl_frame_forgery.c nasl_snmp.c nasl_ssh.c
      nasl_cert.c nasl_crypto.c nasl_debug.c nasl_func.c nasl_grammar.tab.c nasl_host.c
      nasl_http.c nasl_init.c nasl_lex_ctxt.c nasl_misc_funcs.c nasl_scanner_glue.c
      nasl_packet_forgery.c nasl_packet_forgery_v6.c nasl_signature.c nasl_smb.c
@@ -201,10 +176,6 @@ set (FILES arc4.c capture_packet.c charcnv.c exec.c genrand.c hmacmd5.c
 if (NOT OPENVAS_WMICLIENT_FOUND)
   set (FILES smb_interface_stub.c wmi_interface_stub.c ${FILES})
 endif (NOT OPENVAS_WMICLIENT_FOUND)
-
-if (NOT OPENVAS_WINCMD_FOUND)
-  set (FILES smb_interface_stub.c ${FILES})
-endif (NOT OPENVAS_WINCMD_FOUND)
 
 if (KSBA)
   add_definitions (-DHAVE_LIBKSBA)
@@ -242,9 +213,8 @@ set_target_properties (openvas_nasl_shared PROPERTIES VERSION "${PROJECT_VERSION
 target_link_libraries (openvas_nasl_shared openvas_misc_shared ${GLIB_LDFLAGS}
                          ${GCRYPT_LDFLAGS} ${GPGME_LDFLAGS} m
                          ${LIBGVM_BASE_LDFLAGS}
-                         ${LIBNET_LDFLAGS}
                          ${LIBGVM_UTIL_LDFLAGS}
-                         ${OPENVAS_WMICLIENT_LDFLAGS} ${OPENVAS_WINCMD_LDFLAGS}
+                         ${OPENVAS_WMICLIENT_LDFLAGS}
                          ${GNUTLS_LDFLAGS} ${PCAP_LDFLAGS} ${LIBSSH_LDFLAGS}
                          ${KSBA_LDFLAGS} ${SNMP_LDFLAGS}
                          ${LINKER_HARDENING_FLAGS})

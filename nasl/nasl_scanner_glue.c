@@ -29,6 +29,7 @@
 
 #include "../misc/network.h"       /* for getpts */
 #include "../misc/plugutils.h"     /* for plug_set_id */
+#include "../misc/support.h"       /* for the g_memdup2 workaround */
 #include "../misc/vendorversion.h" /* for vendor_version_get */
 #include "nasl_debug.h"
 #include "nasl_func.h"
@@ -135,28 +136,6 @@ script_cve_id (lex_ctxt *lexic)
   return FAKE_CELL;
 }
 
-tree_cell *
-script_bugtraq_id (lex_ctxt *lexic)
-{
-  struct script_infos *script_infos = lexic->script_infos;
-  char *bid = get_str_var_by_num (lexic, 0);
-  int i;
-
-  for (i = 0; bid != NULL; i++)
-    {
-      nvti_add_vtref (script_infos->nvti, vtref_new ("bid", bid, ""));
-      bid = get_str_var_by_num (lexic, i + 1);
-    }
-
-  return FAKE_CELL;
-}
-
-tree_cell *
-script_bugtraq_id_dummy ()
-{
-  return FAKE_CELL;
-}
-
 /**
  * @brief Add a cross reference to the meta data.
  *
@@ -166,17 +145,11 @@ script_bugtraq_id_dummy ()
  * Alternative to "value", "csv" can be used with a
  * list of comma-separated values.
  *
- * In fact, if name is "cve" or "bid", it is equivalent
- * to call script_cve_id() or script_bugtraq_id(), for example
+ * In fact, if name is "cve", it is equivalent
+ * to call script_cve_id(), for example
  * script_cve_id ("CVE-2019-12345");
  * is identical to
  * script_xref (name: "cve", value: "CVE-2019-12345");
- *
- * And also:
- * script_bugtraq_id (12345);
- * is identical to
- * script_xref (name: "bid", value: "12345");
- * (watch out that the number now needs to be a string).
  *
  * This even works with multiple comma-separated elements like
  * script_xref (name: "cve", csv: "CVE-2019-12345,CVE-2019-54321");
@@ -349,7 +322,8 @@ script_require_keys (lex_ctxt *lexic)
   if (keys == NULL)
     {
       nasl_perror (lexic, "Argument error in function script_require_keys()\n");
-      nasl_perror (lexic, "Function usage is : script_require_keys(<name>)\n");
+      nasl_perror (lexic,
+                   "Function usage is : script_require_keys(<name>...)\n");
       nasl_perror (lexic, "Where <name> is the name of a key\n");
       return FAKE_CELL;
     }
@@ -374,9 +348,10 @@ script_mandatory_keys (lex_ctxt *lexic)
     {
       nasl_perror (lexic,
                    "Argument error in function script_mandatory_keys()\n");
-      nasl_perror (lexic,
-                   "Function usage is : script_mandatory_keys(<name>)\n");
-      nasl_perror (lexic, "Where <name> is the name of a key\n");
+      nasl_perror (lexic, "Function usage is: script_mandatory_keys(<name>... "
+                          "[, re: '<name>=<regex>'])\n");
+      nasl_perror (lexic, "Where <name> is the name of a key and <regex> is a "
+                          "regular expression for a value of a key.\n");
       return FAKE_CELL;
     }
 
@@ -865,7 +840,7 @@ replace_kb_item (lex_ctxt *lexic)
  *
  * @return FAKE_CELL
  */
-tree_cell *
+static tree_cell *
 set_kb_item_volatile (lex_ctxt *lexic)
 {
   struct script_infos *script_infos = lexic->script_infos;
@@ -1000,10 +975,8 @@ security_something (lex_ctxt *lexic, proto_post_something_t proto_post_func,
       int len = get_var_size_by_name (lexic, "data");
       int i;
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic warning "-Wdeprecated-declarations"
-      dup = g_memdup (data, len + 1);
-#pragma GCC diagnostic pop
+      dup = g_memdup2 (data, len + 1);
+
       for (i = 0; i < len; i++)
         if (dup[i] == 0)
           dup[i] = ' ';

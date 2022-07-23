@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Based on work Copyright (C) 1998 - 2007 Tenable Network Security, Inc.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -192,5 +192,8 @@ get_plugin_preference_file_content (struct script_infos *, const char *);
 
 long
 get_plugin_preference_file_size (struct script_infos *, const char *);
+
+int
+kb_get_port_state_proto (kb_t kb, int portnum, char *proto);
 
 #endif

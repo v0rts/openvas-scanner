@@ -1,4 +1,4 @@
-/* Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Copyright (C) 2009-2022 Greenbone Networks GmbH
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -15,6 +15,10 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+
+#include "strutils.h"
+
+#include "support.h"
 
 #include <glib.h>
 
@@ -36,12 +40,12 @@ str_match (const gchar *string, const gchar *pattern, int icase)
   if (icase)
     {
       patt = g_pattern_spec_new (g_ascii_strdown (pattern, -1));
-      res = g_pattern_match_string (patt, g_ascii_strdown (string, -1));
+      res = g_pattern_spec_match_string (patt, g_ascii_strdown (string, -1));
     }
   else
     {
       patt = g_pattern_spec_new (pattern);
-      res = g_pattern_match_string (patt, string);
+      res = g_pattern_spec_match_string (patt, string);
     }
   g_pattern_spec_free (patt);
   return res;

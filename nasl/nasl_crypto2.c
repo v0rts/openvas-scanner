@@ -25,6 +25,7 @@
 #include "nasl_crypto2.h"
 
 #include "../misc/strutils.h"
+#include "nasl_crypto_helper.h"
 #include "nasl_debug.h"
 #include "nasl_func.h"
 #include "nasl_global_ctxt.h"
@@ -34,14 +35,21 @@
 #include "nasl_tree.h"
 #include "nasl_var.h"
 
+#include <arpa/inet.h>
 #include <gcrypt.h>
 #include <gnutls/gnutls.h>
 #include <gnutls/x509.h>
+#include <gpg-error.h>
 #include <gvm/base/logging.h>
+#include <stddef.h>
+#include <stdlib.h>
 
 #define INTBLOB_LEN 20
 #define SIGBLOB_LEN (2 * INTBLOB_LEN)
 #define MAX_CIPHER_ID 32
+#define NASL_ENCRYPT 0
+#define NASL_DECRYPT 1
+#define NASL_AAD 2
 
 #undef G_LOG_DOMAIN
 /**
@@ -71,7 +79,7 @@ typedef struct cipher_table_item cipher_table_item_t;
  *
  * The parameter err should be the GnuTLS error code
  */
-void
+static void
 print_tls_error (lex_ctxt *lexic, char *txt, int err)
 {
   nasl_perror (lexic, "%s: %s (%d)\n", txt, gnutls_strerror (err), err);
@@ -82,7 +90,7 @@ print_tls_error (lex_ctxt *lexic, char *txt, int err)
  *
  * The parameter err should be the libgcrypt error code
  */
-void
+static void
 print_gcrypt_error (lex_ctxt *lexic, char *function, int err)
 {
   nasl_perror (lexic, "%s failed: %s/%s\n", function, gcry_strsource (err),
@@ -403,7 +411,7 @@ fail:
 /**
  * @brief Implements the nasl functions pem_to_rsa and pem_to_dsa.
  */
-tree_cell *
+static tree_cell *
 nasl_pem_to (lex_ctxt *lexic, int type)
 {
   tree_cell *retc = NULL;
@@ -1358,7 +1366,7 @@ fail:
 /**
  * @brief Implements the nasl functions bf_cbc_encrypt and bf_cbc_decrypt.
  */
-tree_cell *
+static tree_cell *
 nasl_bf_cbc (lex_ctxt *lexic, int enc)
 {
   tree_cell *retc = NULL;
@@ -1639,10 +1647,8 @@ encrypt_stream_data (lex_ctxt *lexic, int cipher, const char *caller_func)
   if (cipher == GCRY_CIPHER_ARCFOUR)
     {
       resultlen = datalen;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic warning "-Wdeprecated-declarations"
-      tmp = g_memdup (data, datalen);
-#pragma GCC diagnostic pop
+      tmp = g_malloc0 (datalen);
+      memcpy (tmp, data, datalen);
       tmplen = datalen;
     }
   else
@@ -1697,14 +1703,14 @@ nasl_close_stream_cipher (lex_ctxt *lexic)
 }
 
 static tree_cell *
-encrypt_data (lex_ctxt *lexic, int cipher, int mode)
+nasl_mac (lex_ctxt *lexic, int algo, int flags)
 {
-  gcry_cipher_hd_t hd;
   gcry_error_t error;
-  void *result, *data, *key, *iv;
-  void *tmp = NULL;
-  size_t resultlen, datalen, keylen, tmplen, ivlen;
-  tree_cell *retc;
+
+  char *data, *key, *iv;
+  char *result = NULL;
+  size_t datalen, keylen, ivlen, resultlen;
+  tree_cell *retc = NULL;
 
   data = get_str_var_by_name (lexic, "data");
   datalen = get_var_size_by_name (lexic, "data");
@@ -1713,9 +1719,67 @@ encrypt_data (lex_ctxt *lexic, int cipher, int mode)
   iv = get_str_var_by_name (lexic, "iv");
   ivlen = get_var_size_by_name (lexic, "iv");
 
-  if (!data || datalen <= 0 || !key || keylen <= 0)
+  switch ((error = mac (key, keylen, data, datalen, iv, ivlen, algo, flags,
+                        &result, &resultlen)))
     {
-      nasl_perror (lexic, "Syntax: encrypt_data: Missing data or key argument");
+    case GPG_ERR_NO_ERROR:
+      retc = alloc_typed_cell (CONST_DATA);
+      retc->x.str_val = result;
+      retc->size = resultlen;
+      break;
+    case GPG_ERR_MISSING_KEY:
+    case GPG_ERR_MISSING_VALUE:
+      nasl_perror (lexic, "Syntax: nasl_mac: Missing key, or data argument");
+      break;
+    default:
+      nasl_perror (lexic, "Internal: %s.", gcry_strerror (error));
+    }
+
+  return retc;
+}
+
+tree_cell *
+nasl_aes_mac_cbc (lex_ctxt *lexic)
+{
+  return nasl_mac (lexic, GCRY_MAC_CMAC_AES, GCRY_MAC_FLAG_SECURE);
+}
+
+tree_cell *
+nasl_aes_mac_gcm (lex_ctxt *lexic)
+{
+  return nasl_mac (lexic, GCRY_MAC_GMAC_AES, GCRY_MAC_FLAG_SECURE);
+}
+
+static tree_cell *
+crypt_data (lex_ctxt *lexic, int cipher, int mode, int flags)
+{
+  gcry_cipher_hd_t hd;
+  gcry_error_t error;
+  void *data, *key, *iv, *aad;
+  unsigned char *result = NULL, *auth = NULL;
+  size_t resultlen, datalen, keylen, ivlen, aadlen, authlen, len;
+  tree_cell *retc;
+
+  data = get_str_var_by_name (lexic, "data");
+  datalen = get_var_size_by_name (lexic, "data");
+  key = get_str_var_by_name (lexic, "key");
+  keylen = get_var_size_by_name (lexic, "key");
+  iv = get_str_var_by_name (lexic, "iv");
+  ivlen = get_var_size_by_name (lexic, "iv");
+  aad = get_str_var_by_name (lexic, "aad");
+  aadlen = get_var_size_by_name (lexic, "aad");
+  len = get_int_var_by_name (lexic, "len", 0);
+
+  if (!data || datalen == 0 || !key || keylen == 0)
+    {
+      nasl_perror (lexic, "Syntax: crypt_data: Missing data or key argument");
+      return NULL;
+    }
+
+  if (flags & NASL_DECRYPT && len <= 0)
+    {
+      nasl_perror (lexic,
+                   "Syntax: crypt_data: Missing or invalid len argument");
       return NULL;
     }
 
@@ -1725,55 +1789,10 @@ encrypt_data (lex_ctxt *lexic, int cipher, int mode)
       gcry_cipher_close (hd);
       return NULL;
     }
+
   if ((error = gcry_cipher_setkey (hd, key, keylen)))
     {
       nasl_perror (lexic, "gcry_cipher_setkey: %s", gcry_strerror (error));
-      gcry_cipher_close (hd);
-      return NULL;
-    }
-
-  if (cipher == GCRY_CIPHER_ARCFOUR)
-    {
-      resultlen = datalen;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic warning "-Wdeprecated-declarations"
-      tmp = g_memdup (data, datalen);
-#pragma GCC diagnostic pop
-      tmplen = datalen;
-    }
-  else if (cipher == GCRY_CIPHER_3DES)
-    {
-      if (datalen % 8 == 0)
-        resultlen = datalen;
-      else
-        resultlen = ((datalen / 8) + 1) * 8;
-      tmp = g_malloc0 (resultlen);
-      tmplen = resultlen;
-      memcpy (tmp, data, datalen);
-    }
-  else if (cipher == GCRY_CIPHER_AES128)
-    {
-      if (datalen % 16 == 0)
-        resultlen = datalen;
-      else
-        resultlen = ((datalen / 16) + 1) * 16;
-      tmp = g_malloc0 (resultlen);
-      tmplen = resultlen;
-      memcpy (tmp, data, datalen);
-    }
-  else if (cipher == GCRY_CIPHER_AES256)
-    {
-      if (datalen % 32 == 0)
-        resultlen = datalen;
-      else
-        resultlen = ((datalen / 32) + 1) * 32;
-      tmp = g_malloc0 (resultlen);
-      tmplen = resultlen;
-      memcpy (tmp, data, datalen);
-    }
-  else
-    {
-      nasl_perror (lexic, "encrypt_data: Unknown cipher %d", cipher);
       gcry_cipher_close (hd);
       return NULL;
     }
@@ -1783,25 +1802,123 @@ encrypt_data (lex_ctxt *lexic, int cipher, int mode)
       if ((error = gcry_cipher_setiv (hd, iv, ivlen)))
         {
           nasl_perror (lexic, "gcry_cipher_setiv: %s", gcry_strerror (error));
-          g_free (tmp);
+          gcry_cipher_close (hd);
+          return NULL;
+        }
+    }
+
+  if (flags & NASL_DECRYPT)
+    {
+      resultlen = len;
+    }
+  else
+    {
+      if (cipher == GCRY_CIPHER_ARCFOUR || mode == GCRY_CIPHER_MODE_CCM)
+        resultlen = datalen;
+      else if (cipher == GCRY_CIPHER_3DES)
+        resultlen = ((datalen / 8) + 1) * 8;
+      else if (cipher == GCRY_CIPHER_AES128)
+        resultlen = datalen;
+      else if (cipher == GCRY_CIPHER_AES256)
+        resultlen = datalen;
+      else
+        {
+          nasl_perror (lexic, "encrypt_data: Unknown cipher %d", cipher);
+          gcry_cipher_close (hd);
+          return NULL;
+        }
+    }
+
+  if (mode == GCRY_CIPHER_MODE_CCM)
+    {
+      u_int64_t params[3];
+      params[0] = datalen;
+      params[1] = aadlen;
+      params[2] = 16;
+      if ((error = gcry_cipher_ctl (hd, GCRYCTL_SET_CCM_LENGTHS, params,
+                                    sizeof (params))))
+        {
+          nasl_perror (lexic, "gcry_cipher_ctl: %s", gcry_strerror (error));
+          gcry_cipher_close (hd);
+          return NULL;
+        }
+    }
+  if (flags & NASL_AAD)
+    {
+      if (!aad || aadlen == 0)
+        {
+          nasl_perror (
+            lexic, "Syntax: crypt_data: Missing or invalid aad value required");
+          gcry_cipher_close (hd);
+          return NULL;
+        }
+
+      if ((error = gcry_cipher_authenticate (hd, aad, aadlen)))
+        {
+          nasl_perror (lexic, "gcry_cipher_authenticate: %s",
+                       gcry_strerror (error));
+          gcry_cipher_close (hd);
           return NULL;
         }
     }
 
   result = g_malloc0 (resultlen);
-  if ((error = gcry_cipher_encrypt (hd, result, resultlen, tmp, tmplen)))
+  if (flags & NASL_DECRYPT)
     {
-      g_message ("gcry_cipher_encrypt: %s", gcry_strerror (error));
+      if ((error =
+             gcry_cipher_decrypt (hd, result, resultlen, data, resultlen)))
+        {
+          g_message ("gcry_cipher_decrypt: %s", gcry_strerror (error));
+          gcry_cipher_close (hd);
+          g_free (result);
+          return NULL;
+        }
+    }
+  else
+    {
+      if ((error =
+             gcry_cipher_encrypt (hd, result, resultlen, data, resultlen)))
+        {
+          g_message ("gcry_cipher_encrypt: %s", gcry_strerror (error));
+          gcry_cipher_close (hd);
+          g_free (result);
+          return NULL;
+        }
+    }
+  authlen = 16;
+  auth = g_malloc0 (authlen);
+  if (flags & NASL_AAD)
+    {
+      if ((error = gcry_cipher_gettag (hd, auth, authlen)))
+        {
+          g_message ("gcry_cipher_gettag: %s", gcry_strerror (error));
+          gcry_cipher_close (hd);
+          g_free (result);
+          g_free (auth);
+          return NULL;
+        }
       gcry_cipher_close (hd);
-      g_free (result);
-      g_free (tmp);
-      return NULL;
+
+      anon_nasl_var v;
+      retc = alloc_typed_cell (DYN_ARRAY);
+      retc->x.ref_val = g_malloc0 (sizeof (nasl_array));
+      memset (&v, 0, sizeof (v));
+      v.var_type = VAR2_DATA;
+      v.v.v_str.s_val = result;
+      v.v.v_str.s_siz = resultlen;
+      add_var_to_list (retc->x.ref_val, 0, &v);
+
+      memset (&v, 0, sizeof (v));
+      v.var_type = VAR2_DATA;
+      v.v.v_str.s_val = auth;
+      v.v.v_str.s_siz = authlen;
+      add_var_to_list (retc->x.ref_val, 1, &v);
+      return retc;
     }
 
-  g_free (tmp);
   gcry_cipher_close (hd);
   retc = alloc_typed_cell (CONST_DATA);
-  retc->x.str_val = result;
+  retc->x.str_val = (char *) result;
   retc->size = resultlen;
   return retc;
 }
@@ -1832,7 +1949,8 @@ nasl_rc4_encrypt (lex_ctxt *lexic)
       return encrypt_stream_data (lexic, GCRY_CIPHER_ARCFOUR, "rc4_encrypt");
     }
 
-  return encrypt_data (lexic, GCRY_CIPHER_ARCFOUR, GCRY_CIPHER_MODE_STREAM);
+  return crypt_data (lexic, GCRY_CIPHER_ARCFOUR, GCRY_CIPHER_MODE_STREAM,
+                     NASL_ENCRYPT);
 }
 
 /**
@@ -1853,41 +1971,252 @@ nasl_open_rc4_cipher (lex_ctxt *lexic)
 tree_cell *
 nasl_aes128_cbc_encrypt (lex_ctxt *lexic)
 {
-  return encrypt_data (lexic, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_CBC);
+  return crypt_data (lexic, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_CBC,
+                     NASL_ENCRYPT);
 }
 
 tree_cell *
 nasl_aes256_cbc_encrypt (lex_ctxt *lexic)
 {
-  return encrypt_data (lexic, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CBC);
+  return crypt_data (lexic, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CBC,
+                     NASL_ENCRYPT);
 }
 
 tree_cell *
 nasl_aes128_ctr_encrypt (lex_ctxt *lexic)
 {
-  return encrypt_data (lexic, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_CTR);
+  return crypt_data (lexic, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_CTR,
+                     NASL_ENCRYPT);
 }
 
 tree_cell *
 nasl_aes256_ctr_encrypt (lex_ctxt *lexic)
 {
-  return encrypt_data (lexic, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CTR);
+  return crypt_data (lexic, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CTR,
+                     NASL_ENCRYPT);
 }
 
 tree_cell *
 nasl_des_ede_cbc_encrypt (lex_ctxt *lexic)
 {
-  return encrypt_data (lexic, GCRY_CIPHER_3DES, GCRY_CIPHER_MODE_CBC);
+  return crypt_data (lexic, GCRY_CIPHER_3DES, GCRY_CIPHER_MODE_CBC,
+                     NASL_ENCRYPT);
 }
 
 tree_cell *
 nasl_aes128_gcm_encrypt (lex_ctxt *lexic)
 {
-  return encrypt_data (lexic, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_GCM);
+  return crypt_data (lexic, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_GCM,
+                     NASL_ENCRYPT);
+}
+
+tree_cell *
+nasl_aes128_gcm_encrypt_auth (lex_ctxt *lexic)
+{
+  return crypt_data (lexic, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_GCM, NASL_AAD);
+}
+
+tree_cell *
+nasl_aes128_gcm_decrypt (lex_ctxt *lexic)
+{
+  return crypt_data (lexic, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_GCM,
+                     NASL_DECRYPT);
+}
+
+tree_cell *
+nasl_aes128_gcm_decrypt_auth (lex_ctxt *lexic)
+{
+  return crypt_data (lexic, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_GCM,
+                     NASL_AAD | NASL_DECRYPT);
 }
 
 tree_cell *
 nasl_aes256_gcm_encrypt (lex_ctxt *lexic)
 {
-  return encrypt_data (lexic, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_GCM);
+  return crypt_data (lexic, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_GCM,
+                     NASL_ENCRYPT);
+}
+
+tree_cell *
+nasl_aes256_gcm_encrypt_auth (lex_ctxt *lexic)
+{
+  return crypt_data (lexic, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_GCM, NASL_AAD);
+}
+
+tree_cell *
+nasl_aes256_gcm_decrypt (lex_ctxt *lexic)
+{
+  return crypt_data (lexic, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_GCM,
+                     NASL_DECRYPT);
+}
+
+tree_cell *
+nasl_aes256_gcm_decrypt_auth (lex_ctxt *lexic)
+{
+  return crypt_data (lexic, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_GCM,
+                     NASL_AAD | NASL_DECRYPT);
+}
+
+tree_cell *
+nasl_aes128_ccm_encrypt (lex_ctxt *lexic)
+{
+  return crypt_data (lexic, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_CCM,
+                     NASL_ENCRYPT);
+}
+
+tree_cell *
+nasl_aes128_ccm_encrypt_auth (lex_ctxt *lexic)
+{
+  return crypt_data (lexic, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_CCM, NASL_AAD);
+}
+
+tree_cell *
+nasl_aes128_ccm_decrypt (lex_ctxt *lexic)
+{
+  return crypt_data (lexic, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_CCM,
+                     NASL_DECRYPT);
+}
+
+tree_cell *
+nasl_aes128_ccm_decrypt_auth (lex_ctxt *lexic)
+{
+  return crypt_data (lexic, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_CCM,
+                     NASL_AAD | NASL_DECRYPT);
+}
+
+tree_cell *
+nasl_aes256_ccm_encrypt (lex_ctxt *lexic)
+{
+  return crypt_data (lexic, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CCM,
+                     NASL_ENCRYPT);
+}
+
+tree_cell *
+nasl_aes256_ccm_encrypt_auth (lex_ctxt *lexic)
+{
+  return crypt_data (lexic, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CCM, NASL_AAD);
+}
+
+tree_cell *
+nasl_aes256_ccm_decrypt (lex_ctxt *lexic)
+{
+  return crypt_data (lexic, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CCM,
+                     NASL_DECRYPT);
+}
+
+tree_cell *
+nasl_aes256_ccm_decrypt_auth (lex_ctxt *lexic)
+{
+  return crypt_data (lexic, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CCM,
+                     NASL_AAD | NASL_DECRYPT);
+}
+
+/**
+ * @brief Add the SMB3KDF as specified in [SP800-108] section 5.1
+ *
+ * @param lexic
+ * @return tree_cell*
+ */
+tree_cell *
+nasl_smb3kdf (lex_ctxt *lexic)
+{
+  gcry_mac_hd_t hd;
+  gcry_error_t error;
+  void *result, *key, *label, *context, *buf;
+  u_char *tmp;
+  size_t resultlen, keylen, labellen, contextlen, buflen, r = 4;
+  long lvalue;
+  int i = 1;
+  tree_cell *retc;
+
+  key = get_str_var_by_name (lexic, "key");
+  keylen = get_var_size_by_name (lexic, "key");
+  label = get_str_var_by_name (lexic, "label");
+  labellen = get_var_size_by_name (lexic, "label");
+  context = get_str_var_by_name (lexic, "ctx");
+  contextlen = get_var_size_by_name (lexic, "ctx");
+  lvalue = get_int_var_by_name (lexic, "lvalue", 0);
+
+  if (!key || keylen <= 0 || !label || labellen <= 0 || !context
+      || contextlen <= 0)
+    {
+      nasl_perror (
+        lexic, "Syntax: nasl_smb3kdf: Missing key, label or context argument");
+      return NULL;
+    }
+
+  if (lvalue != 128 && lvalue != 256)
+    {
+      nasl_perror (lexic,
+                   "nasl_smb3kdf: lvalue must have a value of 128 or 256");
+      return NULL;
+    }
+
+  if ((error = gcry_mac_open (&hd, GCRY_MAC_HMAC_SHA256, 0, NULL)))
+    {
+      nasl_perror (lexic, "gcry_mac_open: %s", gcry_strerror (error));
+      gcry_mac_close (hd);
+      return NULL;
+    }
+
+  if ((error = gcry_mac_setkey (hd, key, keylen)))
+    {
+      nasl_perror (lexic, "gcry_mac_setkey: %s", gcry_strerror (error));
+      gcry_mac_close (hd);
+      return NULL;
+    }
+
+  resultlen = lvalue / 8;
+
+  // Prepare buffer as in [SP800-108] section 5.1
+  // [i]2 || Label || 0x00 || Context || [L]2
+  // [i]2 is the binary presentation of the iteration. Allways 1
+  // Label is given by caller
+  // 0x00 is a byte set to 0
+  // Context is given by caller
+  // L is a integer set to 128 or 256 for smb3kdf
+  buflen = r + labellen + 1 + contextlen + 4;
+  buf = g_malloc0 (buflen);
+  tmp = buf;
+
+  // We need bytes in big endian, but they are currently stored as little endian
+  i = htonl (i);
+  memcpy (tmp, &i, r);
+  tmp = tmp + r;
+
+  memcpy (tmp, label, labellen);
+  tmp = tmp + labellen;
+  *tmp = 0;
+  tmp = tmp + 1;
+  memcpy (tmp, context, contextlen);
+  tmp = tmp + contextlen;
+
+  // We need bytes in big endian, but they are currently stored as little endian
+  lvalue = htonl (lvalue);
+  memcpy (tmp, &lvalue, 4);
+
+  if ((error = gcry_mac_write (hd, buf, buflen)))
+    {
+      g_message ("gcry_mac_write: %s", gcry_strerror (error));
+      gcry_mac_close (hd);
+      g_free (buf);
+      return NULL;
+    }
+
+  result = g_malloc0 (resultlen);
+  if ((error = gcry_mac_read (hd, result, &resultlen)))
+    {
+      g_message ("gcry_mac_read: %s", gcry_strerror (error));
+      gcry_mac_close (hd);
+      g_free (buf);
+      g_free (result);
+      return NULL;
+    }
+
+  g_free (buf);
+  gcry_mac_close (hd);
+  retc = alloc_typed_cell (CONST_DATA);
+  retc->x.str_val = result;
+  retc->size = resultlen;
+  return retc;
 }

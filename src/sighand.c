@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Portions Copyright (C) 2006 Software in the Public Interest, Inc.
  * Based on work Copyright (C) 1998 - 2006 Tenable Network Security, Inc.
  *
@@ -22,6 +22,8 @@
  * @file sighand.c
  * @brief Provides signal handling functions.
  */
+
+#include "sighand.h"
 
 #include "debug_utils.h"
 
@@ -121,7 +123,7 @@ print_trace (void)
   strings = backtrace_symbols (array, ret);
   g_warning ("%s", message);
 
-  for (left = 0; left < 10; left++)
+  for (left = 0; left < ret; left++)
     g_warning ("%s\n", strings[left]);
 
   g_free (strings);

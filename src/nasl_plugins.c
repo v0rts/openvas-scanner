@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Portions Copyright (C) 2006 Software in the Public Interest, Inc.
  * Based on work Copyright (C) 1998 - 2006 Tenable Network Security, Inc.
  *
@@ -31,12 +31,12 @@
 #include "pluginscheduler.h"
 #include "processes.h"
 
+#include <bsd/unistd.h>
 #include <errno.h> /* for errno */
 #include <glib.h>
 #include <gvm/base/drop_privileges.h> /* for drop_privileges */
 #include <gvm/base/networking.h>
-#include <gvm/base/prefs.h> /* for prefs_get_bool */
-#include <gvm/base/proctitle.h>
+#include <gvm/base/prefs.h>     /* for prefs_get_bool */
 #include <gvm/util/nvticache.h> /* for nvticache_add */
 #include <stdio.h>              /* for snprintf() */
 #include <string.h>             /* for strlen() */
@@ -129,7 +129,7 @@ nasl_file_check (const char *folder, const char *filename)
  * @return 0 on success, -1 on error.
  */
 int
-nasl_plugin_add (char *folder, char *filename)
+nasl_plugin_add (const char *folder, char *filename)
 {
   char fullname[PATH_MAX + 1];
   int nasl_mode;
@@ -210,7 +210,7 @@ nasl_thread (struct script_infos *args)
   kb = args->key;
   kb_lnk_reset (kb);
   addr6_to_str (args->ip, ip_str);
-  proctitle_set ("openvas: testing %s (%s)", ip_str, args->name);
+  setproctitle ("openvas: testing %s (%s)", ip_str, args->name);
 
   if (prefs_get_bool ("nasl_no_signature_check"))
     nasl_mode |= NASL_ALWAYS_SIGNED;

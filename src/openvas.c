@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Portions Copyright (C) 2006 Software in the Public Interest, Inc.
  * Based on work Copyright (C) 1998 - 2006 Tenable Network Security, Inc.
  *
@@ -33,6 +33,8 @@
  * OpenVAS main module, runs the scanner.
  */
 
+#include "openvas.h"
+
 #include "../misc/plugutils.h"     /* nvticache_free */
 #include "../misc/vendorversion.h" /* for vendor_version_set */
 #include "attack.h"                /* for attack_network */
@@ -42,16 +44,16 @@
 #include "sighand.h"               /* for openvas_signal */
 #include "utils.h"                 /* for store_file */
 
-#include <errno.h>  /* for errno() */
-#include <fcntl.h>  /* for open() */
-#include <gcrypt.h> /* for gcry_control */
+#include <bsd/unistd.h> /* for proctitle_init */
+#include <errno.h>      /* for errno() */
+#include <fcntl.h>      /* for open() */
+#include <gcrypt.h>     /* for gcry_control */
 #include <glib.h>
 #include <gnutls/gnutls.h> /* for gnutls_global_set_log_*  */
 #include <grp.h>
 #include <gvm/base/logging.h> /* for setup_log_handler, load_log_configuration, free_log_configuration*/
 #include <gvm/base/nvti.h>      /* for prefs_get() */
 #include <gvm/base/prefs.h>     /* for prefs_get() */
-#include <gvm/base/proctitle.h> /* for proctitle_set */
 #include <gvm/base/version.h>   /* for gvm_libs_version */
 #include <gvm/util/kb.h>        /* for KB_PATH_DEFAULT */
 #include <gvm/util/mqtt.h>      /* for mqtt_init */
@@ -249,7 +251,7 @@ overwrite_openvas_prefs_with_prefs_from_client (struct scan_globals *globals)
                        "by the client and will be ignored.",
                        pref_name[0]);
           else
-            prefs_set (pref[0], pref[1] ?: "");
+            prefs_set (pref[0], pref[1] ? pref[1] : "");
           g_strfreev (pref_name);
         }
 
@@ -387,7 +389,7 @@ stop_single_task_scan (void)
  *
  * @param msg Message to send to the client.
  */
-void
+static void
 send_message_to_client_and_finish_scan (const char *msg)
 {
   char key[1024];
@@ -407,7 +409,7 @@ send_message_to_client_and_finish_scan (const char *msg)
  * @param globals scan_globals needed for client preference handling.
  * @param config_file Used for config preference handling.
  */
-void
+static void
 attack_network_init (struct scan_globals *globals, const gchar *config_file)
 {
   const char *mqtt_server_uri;
@@ -443,6 +445,7 @@ attack_network_init (struct scan_globals *globals, const gchar *config_file)
       else
         {
           g_message ("%s: INIT MQTT: SUCCESS", __func__);
+          prefs_set ("mqtt_enabled", "yes");
         }
     }
 
@@ -465,11 +468,11 @@ attack_network_init (struct scan_globals *globals, const gchar *config_file)
  * @param argv Argument vector.
  */
 int
-openvas (int argc, char *argv[])
+openvas (int argc, char *argv[], char *env[])
 {
   int err;
 
-  proctitle_init (argc, argv);
+  setproctitle_init (argc, argv, env);
   gcrypt_init ();
 
   static gboolean display_version = FALSE;
@@ -526,7 +529,7 @@ openvas (int argc, char *argv[])
       printf ("GIT revision %s\n", OPENVAS_GIT_REVISION);
 #endif
       printf ("gvm-libs %s\n", gvm_libs_version ());
-      printf ("Most new code since 2005: (C) 2021 Greenbone Networks GmbH\n");
+      printf ("Most new code since 2005: (C) 2022 Greenbone Networks GmbH\n");
       printf (
         "Nessus origin: (C) 2004 Renaud Deraison <deraison@nessus.org>\n");
       printf ("License GPLv2: GNU GPL version 2\n");
@@ -548,8 +551,10 @@ openvas (int argc, char *argv[])
     return -1;
 
   err = init_sentry ();
-  err ? /* Sentry is optional */
-      : g_message ("Sentry is enabled. This can log sensitive information.");
+  if (!err)
+    {
+      g_message ("Sentry is enabled. This can log sensitive information.");
+    }
 
   /* Config file location */
   if (!config_file)
@@ -569,6 +574,18 @@ openvas (int argc, char *argv[])
   /* openvas --scan-stop */
   if (stop_scan_id)
     {
+      set_default_openvas_prefs ();
+      prefs_config (config_file);
+      if (plugins_cache_init ())
+        {
+          g_message ("Failed to initialize nvti cache. Not possible to "
+                     "stop the scan");
+          nvticache_reset ();
+          gvm_close_sentry ();
+          exit (1);
+        }
+      nvticache_reset ();
+
       global_scan_id = g_strdup (stop_scan_id);
       stop_single_task_scan ();
       gvm_close_sentry ();

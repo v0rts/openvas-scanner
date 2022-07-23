@@ -1,6 +1,6 @@
-%pure-parser
-%parse-param {naslctxt * parm}
-%lex-param {naslctxt * parm}
+%define api.pure
+%parse-param {naslctxt * parm}{int * err_c}
+%lex-param {naslctxt * parm}{int * err_c}
 %expect 1
 %{
 /* Based on work Copyright (C) 2002 - 2004 Michel Arboi and Renaud Deraison
@@ -23,8 +23,12 @@
 
 #define YYPARSE_PARAM parm
 #define YYLEX_PARAM parm
+#define YYPARSE_ERRC err_c
+#define YYLEX_ERRC err_c
 
 #define LNB	(((naslctxt*)parm)->line_nb)
+#define LN	(((naslctxt*)parm)->name)
+#define ERRC	err_c
 
 #include <ctype.h> /* for isalpha */
 #include <pcap.h> /* for islocalhost */
@@ -50,8 +54,9 @@
 static char *parse_buffer = NULL;
 
 static int parse_len = 0;
+static int include_order = 0;
 
-static void naslerror(naslctxt *, const char *);
+static void naslerror(naslctxt *, int *, const char *);
 
 GHashTable *includes_hash = NULL;
 
@@ -69,7 +74,7 @@ GHashTable *includes_hash = NULL;
 }
 
 %{
-static int nasllex(YYSTYPE * lvalp, void * parm);
+static int nasllex(YYSTYPE * lvalp, void * parm, int * err_c);
 %}
 
 %token IF
@@ -178,6 +183,7 @@ func_decl: FUNCTION identifier '(' arg_decl ')' block
 	{
           nasl_set_function_filename ($2);
 	  $$ = alloc_typed_cell (NODE_FUN_DEF);
+          $$->name = LN;
           $$->line_nb = LNB;
           $$->x.str_val = $2;
 	  $$->link[0] = $4;
@@ -188,12 +194,14 @@ arg_decl: { $$ = NULL; } | arg_decl_1 { $$ = $1; };
 arg_decl_1: identifier
         {
           $$ = alloc_typed_cell (NODE_DECL);
+          $$->name = LN;
           $$->line_nb = LNB;
           $$->x.str_val = $1;
         }
 	| identifier ',' arg_decl_1
 	{
 	  $$ = alloc_typed_cell (NODE_DECL);
+          $$->name = LN;
           $$->line_nb = LNB;
           $$->x.str_val = $1;
 	  $$->link[0] = $3;
@@ -209,6 +217,7 @@ instr_list: instr
 	  else
 	    {
 	      $$ = alloc_typed_cell (NODE_INSTR_L);
+          $$->name = LN;
               $$->line_nb = LNB;
 	      $$->link[0] = $1;
 	      $$->link[1] = $2;
@@ -216,17 +225,21 @@ instr_list: instr
 	} ;
 
 /* Instructions */
-instr: simple_instr ';' { $$ = $1; } | block | if_block | loop ;
+instr: simple_instr ';' { $$ = $1; } | block | if_block | loop
+        | error ';' {yyerrok;}
+        ;
 
 /* "simple" instruction */
 simple_instr : aff | post_pre_incr | rep
 	| func_call | ret | inc | loc | glob
 	| BREAK {
 	  $$ = alloc_typed_cell (NODE_BREAK);
+          $$->name = LN;
           $$->line_nb = LNB;
 	}
 	| CONTINUE {
 	  $$ = alloc_typed_cell (NODE_CONTINUE);
+          $$->name = LN;
           $$->line_nb = LNB;
 	}
 	| /* nop */ { $$ = NULL; };
@@ -235,12 +248,14 @@ simple_instr : aff | post_pre_incr | rep
 ret: RETURN expr
 	{
 	  $$ = alloc_typed_cell (NODE_RETURN);
+          $$->name = LN;
           $$->line_nb = LNB;
 	  $$->link[0] = $2;
 	} |
 	RETURN
 	{
 	  $$ = alloc_typed_cell (NODE_RETURN);
+          $$->name = LN;
           $$->line_nb = LNB;
 	} ;
 
@@ -248,12 +263,14 @@ ret: RETURN expr
 if_block: IF '(' expr ')' instr
 	{
 	  $$ = alloc_typed_cell (NODE_IF_ELSE);
+          $$->name = LN;
           $$->line_nb = LNB;
 	  $$->link[0] = $3; $$->link[1] = $5;
 	}
 	| IF '(' expr ')' instr ELSE instr
 	{
 	  $$ = alloc_typed_cell (NODE_IF_ELSE);
+          $$->name = LN;
           $$->line_nb = LNB;
 	  $$->link[0] = $3; $$->link[1] = $5; $$->link[2] = $7;
 	};
@@ -263,6 +280,7 @@ loop : for_loop | while_loop | repeat_loop | foreach_loop ;
 for_loop : FOR '(' aff_func ';' expr ';' aff_func ')' instr
 	{
 	  $$ = alloc_typed_cell (NODE_FOR);
+          $$->name = LN;
           $$->line_nb = LNB;
 	  $$->link[0] = $3;
 	  $$->link[1] = $5;
@@ -273,6 +291,7 @@ for_loop : FOR '(' aff_func ';' expr ';' aff_func ')' instr
 while_loop : WHILE '(' expr ')' instr
 	{
 	  $$ = alloc_typed_cell (NODE_WHILE);
+          $$->name = LN;
           $$->line_nb = LNB;
 	  $$->link[0] = $3;
 	  $$->link[1] = $5;
@@ -280,6 +299,7 @@ while_loop : WHILE '(' expr ')' instr
 repeat_loop : REPEAT instr UNTIL expr ';'
 	{
 	  $$ = alloc_typed_cell (NODE_REPEAT_UNTIL);
+          $$->name = LN;
           $$->line_nb = LNB;
 	  $$->link[0] = $2;
 	  $$->link[1] = $4;
@@ -288,6 +308,7 @@ repeat_loop : REPEAT instr UNTIL expr ';'
 foreach_loop : FOREACH identifier '(' expr ')'  instr
 	{
 	  $$ = alloc_typed_cell (NODE_FOREACH);
+          $$->name = LN;
           $$->line_nb = LNB;
           $$->x.str_val = $2;
 	  $$->link[0] = $4;
@@ -301,6 +322,7 @@ aff_func: aff | post_pre_incr | func_call | /*nop */ { $$ = NULL; };
 rep: func_call REP expr
 	{
 	  $$ = alloc_typed_cell (NODE_REPEATED);
+          $$->name = LN;
           $$->line_nb = LNB;
 	  $$->link[0] = $1;
 	  $$->link[1] = $3;
@@ -313,6 +335,11 @@ inc: INCLUDE '(' string ')'
 	{
           char *tmp;
 	  naslctxt	subctx;
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+          int * error_counter;
+  #pragma GCC diagnostic pop
+          error_counter = (int*)err_c;
 
           bzero (&subctx, sizeof (subctx));
           subctx.always_signed = ((naslctxt*)parm)->always_signed;
@@ -335,8 +362,12 @@ inc: INCLUDE '(' string ')'
             }
           else if (init_nasl_ctx (&subctx, $3) >= 0)
             {
-              if (!naslparse (&subctx))
+              if (!naslparse (&subctx, err_c))
                 {
+				  // set the name of tree to the filename for further
+				  // identification of origin (e.g. whos is calling a func).
+				  subctx.tree->name = $3;
+				  subctx.tree->include_order = include_order;
                   $$ = subctx.tree;
                   g_hash_table_insert (includes_hash, $3, $$);
                   ref_cell ($$);
@@ -363,6 +394,7 @@ inc: INCLUDE '(' string ')'
 func_call: identifier '(' arg_list ')'
 	{
 	  $$ = alloc_typed_cell (NODE_FUN_CALL);
+          $$->name = LN;
           $$->line_nb = LNB;
           $$->x.str_val = $1;
 	  $$->link[0] = $3;
@@ -378,12 +410,14 @@ arg_list_1: arg | arg ',' arg_list_1
 arg : expr
 	{
 	  $$ = alloc_typed_cell (NODE_ARG);
+          $$->name = LN;
           $$->line_nb = LNB;
 	  $$->link[0] = $1;
 	}
 	| identifier ':' expr
 	{
 	  $$ = alloc_typed_cell (NODE_ARG);
+          $$->name = LN;
           $$->line_nb = LNB;
           $$->x.str_val = $1;
 	  $$->link[0] = $3;
@@ -451,8 +485,8 @@ expr: '(' expr ')' { $$ = $2; }
 	| post_pre_incr
 	| expr MATCH expr { $$ = alloc_expr_cell(LNB, COMP_MATCH, $1, $3); }
 	| expr NOMATCH expr { $$ = alloc_expr_cell(LNB, COMP_NOMATCH, $1, $3); }
-	| expr RE_MATCH string { $$ = alloc_RE_cell(LNB, COMP_RE_MATCH, $1, $3); }
-	| expr RE_NOMATCH string { $$ = alloc_RE_cell(LNB, COMP_RE_NOMATCH, $1, $3); }
+	| expr RE_MATCH string { $$ = alloc_RE_cell(LNB, COMP_RE_MATCH, $1, $3, ERRC); }
+	| expr RE_NOMATCH string { $$ = alloc_RE_cell(LNB, COMP_RE_NOMATCH, $1, $3, ERRC); }
 	| expr '<' expr { $$ = alloc_expr_cell(LNB, COMP_LT, $1, $3); }
 	| expr '>' expr { $$ = alloc_expr_cell(LNB, COMP_GT, $1, $3); }
 	| expr EQ expr  { $$ = alloc_expr_cell(LNB, COMP_EQ, $1, $3); }
@@ -535,10 +569,12 @@ glob: GLOBAL arg_decl
 #include <gcrypt.h>
 
 static void
-naslerror(naslctxt *parm, const char *s)
+naslerror(naslctxt *parm, int *error_counter, const char *s)
 {
   (void) parm;
-  g_message ("%s", s);
+  (*error_counter)++;
+  g_message ("Parse error at or near line %d:", LNB);
+  g_message ("    %s", s);
 }
 
 static GSList * inc_dirs = NULL;
@@ -554,6 +590,9 @@ static GSList * inc_dirs = NULL;
  *         -1 if the stat on the given directory path was unsuccessful.
  *         -2 if the given directory path was not a directory.
  */
+int
+add_nasl_inc_dir (const char * dir);
+
 int
 add_nasl_inc_dir (const char * dir)
 {
@@ -601,12 +640,6 @@ load_checksums (kb_t kb)
   snprintf (filename, sizeof (filename), "%s/sha256sums", base);
   if (g_file_get_contents (filename, &fbuffer, &flen, NULL))
     checksum_algorithm = GCRY_MD_SHA256;
-  else
-    {
-      snprintf (filename, sizeof (filename), "%s/md5sums", base);
-      if (g_file_get_contents (filename, &fbuffer, &flen, NULL))
-        checksum_algorithm = GCRY_MD_MD5;
-    }
   if (checksum_algorithm == GCRY_MD_NONE)
     {
       g_warning ("No plugins checksums file");
@@ -629,12 +662,7 @@ load_checksums (kb_t kb)
       g_warning ("%s: Couldn't read file %s", __func__, filename);
       return;
     }
-  if (checksum_algorithm == GCRY_MD_MD5)
-    {
-      kb_del_items (kb, "md5sums:*");
-      prefix = "md5sums";
-    }
-  else
+  if (checksum_algorithm == GCRY_MD_SHA256)
     {
       kb_del_items (kb, "sha256sums:*");
       prefix = "sha256sums";
@@ -681,7 +709,7 @@ file_checksum (const char *filename, int algorithm)
   char *content = NULL, digest[128], *result;
   size_t len = 0, i, alglen;
 
-  assert (algorithm == GCRY_MD_MD5 || algorithm == GCRY_MD_SHA256);
+  assert (algorithm == GCRY_MD_SHA256);
   if (!filename || !g_file_get_contents (filename, &content, &len, NULL))
     return NULL;
 
@@ -722,6 +750,8 @@ init_nasl_ctx(naslctxt* pc, const char* name)
   if (! inc_dirs) add_nasl_inc_dir("");
 
   pc->line_nb = 1;
+  pc->name = (char *) name;
+  pc->include_order = include_order++;
   pc->tree = NULL;
   if (!parse_len)
     {
@@ -784,8 +814,6 @@ init_nasl_ctx(naslctxt* pc, const char* name)
   load_checksums (pc->kb);
   if (checksum_algorithm == GCRY_MD_NONE)
     return -1;
-  else if (checksum_algorithm == GCRY_MD_MD5)
-    snprintf (key_path, sizeof (key_path), "md5sums:%s", filename);
   else if (checksum_algorithm == GCRY_MD_SHA256)
     snprintf (key_path, sizeof (key_path), "sha256sums:%s", filename);
   else
@@ -830,12 +858,28 @@ nasl_clean_ctx(naslctxt* c)
 }
 
 void
+nasl_clean_inc (void);
+
+void
 nasl_clean_inc (void)
 {
  if (!includes_hash)
    return;
  g_hash_table_destroy (includes_hash);
  includes_hash = NULL;
+}
+
+int
+nasl_get_include_order(const char* c)
+{
+	tree_cell *ctx;
+	if (!includes_hash)
+		return -2;
+	
+    if ((ctx = g_hash_table_lookup (includes_hash, c))) {
+		return ctx->include_order;
+	}
+	return -1;
 }
 
 enum lex_state {
@@ -1433,8 +1477,12 @@ mylex (YYSTYPE *lvalp, void *parm)
 }
 
 static int
-nasllex(YYSTYPE * lvalp, void * parm)
+nasllex(YYSTYPE * lvalp, void * parm, int * err_c)
 {
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wunused-parameter"
+  (void) err_c;
+  #pragma GCC diagnostic pop
   int	x = mylex (lvalp, parm);
   return x;
 }

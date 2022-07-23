@@ -30,7 +30,7 @@
 #include <stdlib.h> /* for abort */
 #include <string.h> /* for memcpy */
 
-tree_cell *
+static tree_cell *
 alloc_tree_cell ()
 {
   return g_malloc0 (sizeof (tree_cell));
@@ -45,7 +45,7 @@ alloc_typed_cell (int typ)
 }
 
 tree_cell *
-alloc_RE_cell (int lnb, int t, tree_cell *l, char *re_str)
+alloc_RE_cell (int lnb, int t, tree_cell *l, char *re_str, int *err_c)
 {
   regex_t *re = g_malloc0 (sizeof (regex_t));
   int e;
@@ -65,6 +65,7 @@ alloc_RE_cell (int lnb, int t, tree_cell *l, char *re_str)
       nasl_perror (NULL, "Line %d: Cannot compile regex: %s (error %d: %s)\n",
                    lnb, re_str, e, errbuf);
       g_free (re);
+      *err_c = *err_c + 1;
     }
   g_free (re_str);
   return c;
@@ -376,7 +377,7 @@ nasl_type_name (int t)
 void
 nasl_dump_tree (const tree_cell *c)
 {
-  printf ("^^^^ %p ^^^^^\n", c);
+  printf ("^^^^ %p ^^^^^\n", (void *) c);
   if (c == NULL)
     puts ("NULL CELL");
   else if (c == FAKE_CELL)

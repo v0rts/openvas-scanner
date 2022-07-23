@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Based on work Copyright (C) 1998 - 2007 Tenable Network Security, Inc.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -56,5 +56,8 @@ v6_getsourceip (struct in6_addr *, struct in6_addr *);
 
 char *
 get_iface_from_ip (const char *);
+
+int
+get_iface_index (struct in6_addr *, int *);
 
 #endif

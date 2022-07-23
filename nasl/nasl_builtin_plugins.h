@@ -1,4 +1,4 @@
-/* Copyright (C) 2010-2021 Greenbone Networks GmbH
+/* Copyright (C) 2010-2022 Greenbone Networks GmbH
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -24,7 +24,8 @@
 
 #ifndef _NASL_BUILTIN_PLUGINS_H
 #define _NASL_BUILTIN_PLUGINS_H
-
+#include "nasl_lex_ctxt.h"
+#include "nasl_tree.h"
 tree_cell *
 plugin_run_find_service (lex_ctxt *);
 

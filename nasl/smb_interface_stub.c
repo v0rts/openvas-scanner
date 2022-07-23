@@ -1,4 +1,4 @@
-/* Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Copyright (C) 2009-2022 Greenbone Networks GmbH
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -150,22 +150,4 @@ smb_file_TrusteeRights (SMB_HANDLE handle, const char *filename)
   (void) handle;
   (void) filename;
   return NULL;
-}
-
-/**
- * @brief Command Execution in Windows
- *
- * @param[in] argc - Connection strings
- *
- * @param[in] argv - Number of arguments
- *
- * @return, 0 on success, -1 on failure
- */
-int
-wincmd (int argc, char *argv[], char **res)
-{
-  (void) argc;
-  (void) argv;
-  (void) res;
-  return -1;
 }

@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2021-2022 Greenbone Networks GmbH
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -161,7 +161,7 @@ get_status_of_table_driven_lsc_from_json (const char *scan_id,
                                           int len)
 {
   JsonParser *parser;
-  JsonReader *reader;
+  JsonReader *reader = NULL;
 
   GError *err = NULL;
   gchar *ret = NULL;
@@ -206,7 +206,8 @@ get_status_of_table_driven_lsc_from_json (const char *scan_id,
   json_reader_end_member (reader);
 
 cleanup:
-  g_object_unref (reader);
+  if (reader)
+    g_object_unref (reader);
   g_object_unref (parser);
   if (err != NULL)
     {

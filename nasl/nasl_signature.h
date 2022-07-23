@@ -1,4 +1,4 @@
-/* Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Copyright (C) 2009-2022 Greenbone Networks GmbH
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -19,6 +19,7 @@
 
 #ifndef NASL_SIGNATURE_H
 #define NASL_SIGNATURE_H
+#include <stddef.h>
 
 int
 nasl_verify_signature (const char *, const char *, size_t);

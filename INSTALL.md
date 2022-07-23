@@ -2,7 +2,7 @@ INSTALLATION INSTRUCTIONS FOR OPENVAS
 =====================================
 
 Please note: The reference system used by most of the developers is Debian
-GNU/Linux 'Buster' 10. The build might fail on any other system. Also, it is
+Stable. The build might fail on any other system. Also, it is
 necessary to install dependent development packages.
 
 Prerequisites for openvas
@@ -11,7 +11,7 @@ Prerequisites for openvas
 Prerequisites:
 * a C compiler (e.g. gcc)
 * cmake >= 3.0
-* libgvm_base, libgvm_util >= 21.10
+* libgvm_base, libgvm_util >= 22.4
 * glib-2.0 >= 2.42
 * gio-2.0
 * json-glib-1.0 >= 1.4.4
@@ -25,6 +25,7 @@ Prerequisites:
 * libssh >= 0.6.0
 * libksba >= 1.0.7
 * libgnutls >= 3.6.4
+* libbsd
 
 Prerequisites for building documentation:
 * Doxygen
@@ -41,12 +42,19 @@ Recommended for extended Windows support (e.g. automatically start the remote re
 
 Recommended to have improved SNMP support:
 * netsnmp libraries or alternatively the snmpget binary.
+* snmp client
 
-Install prerequisites on Debian GNU/Linux 'Buster' 10:
+Recommended for port scanning and service detection based on nmap.
+* nmap
+
+Recommended for port scanning based on pnscan.
+* pnscan
+
+Install prerequisites on Debian GNU/Linux 'Bullseye' 11:
 
     apt-get install gcc pkg-config libssh-gcrypt-dev libgnutls28-dev \
     libglib2.0-dev libjson-glib-dev libpcap-dev libgpgme-dev bison libksba-dev \
-    libsnmp-dev libgcrypt20-dev redis-server
+    libsnmp-dev libgcrypt20-dev redis-server libbsd-dev
 
 
 Compiling openvas
@@ -72,6 +80,15 @@ Or (if you want to use the default installation path /usr/local):
     cmake ..
 
 This only needs to be done once.
+
+Other cmake variables need to be adjusted as well if you want to have all files in CMAKE_INSTALL_PREFIX or in the default installation path `/usr/local`. They can be added to the `cmake` call with `-D<var_name>=<install_prefix><default_value>`.
+
+| Variable               | Default                              |
+| ---------------------- |:-------------------------------------|
+| SYSCONFDIR             |  `/etc`                              |
+| LOCALSTATEDIR          |  `/var`                              |
+| OPENVAS_FEED_LOCK_PATH |  `/var/lib/openvas/feed-update.lock` |
+| OPENVAS_RUN_DIR        |  `/run/ospd`                         |
 
 Thereafter, the following commands are useful:
 
@@ -114,7 +131,8 @@ Setting up openvas
 Setting up an openvas requires the following steps:
 
 1. (optional) You may decide to change the default scanner preferences
-   by setting them in the file `$prefix/etc/openvas.conf`. If that file does
+   by setting them in the file `/etc/openvas/openvas.conf` or `<SYSCONFDIR>/openvas/openvas.conf`
+   when `SYSCONFDIR` was set via the `cmake` call. If that file does
    not exist (default), then the default settings are used. You can view
    them with `openvas -s`. The output of that command is a valid configuration
    file. The man page (`man openvas`) provides details about the available
@@ -148,7 +166,7 @@ Setting up an openvas requires the following steps:
    ```bash
    sudo cp config/redis-openvas.conf /etc/redis/
    sudo chown redis:redis /etc/redis/redis-openvas.conf
-   sudo echo "db_address = /run/redis-openvas/redis.sock" > <install-prefix>/etc/openvas/openvas.conf
+   sudo echo "db_address = /run/redis-openvas/redis.sock" > /etc/openvas/openvas.conf # Or append to <SYSCONFDIR>/openvas/openvas.conf when SYSCONFDIR was set via the cmake call.
    sudo systemctl start redis-server@openvas.service
    ```
 
@@ -191,7 +209,11 @@ Logging Configuration
 
 If you encounter problems, by default the scanner writes logs to the file
 
-    <install-prefix>/var/log/gvm/openvas.log
+    /var/log/gvm/openvas.log
+
+When `LOCALSTATEDIR` was set via the `cmake` call the scanner writes logs to the file
+
+    <LOCALSTATEDIR>/log/gvm/openvas.log
 
 It may contain useful information.The exact location of this file may differ
 depending on your distribution and installation method. Please have this file
@@ -199,9 +221,13 @@ ready when contacting the GVM developers via the Greenbone Community Portal
 or submitting bug reports at <https://github.com/greenbone/openvas/issues> as
 they may help to pinpoint the source of your issue.
 
-Logging is configured via the file
+Logging is configured via the file at default location
 
-    <install-prefix>/etc/openvas/openvas_log.conf
+    /etc/openvas/openvas_log.conf
+
+When `SYSCONFDIR` was set via the `cmake` call the file is located at
+
+    <SYSCONFDIR>/openvas/openvas_log.conf
 
 The configuration is divided into domains like this one
 

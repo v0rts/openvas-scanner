@@ -1,4 +1,4 @@
-/* Copyright (C) 2019-2021 Greenbone Networks GmbH
+/* Copyright (C) 2019-2022 Greenbone Networks GmbH
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -35,7 +35,7 @@ AfterEach (attack)
 gchar *given_name = NULL;
 gchar *given_value = NULL;
 
-int
+static int
 __wrap_redis_push_str (kb_t kb, const char *name, const char *value)
 {
   (void) kb; /* Used. */
@@ -45,7 +45,7 @@ __wrap_redis_push_str (kb_t kb, const char *name, const char *value)
   return 0;
 }
 
-int
+static int
 __wrap_redis_lnk_reset (kb_t kb)
 {
   (void) kb; /* Used. */

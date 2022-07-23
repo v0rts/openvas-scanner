@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Based on work Copyright (C) 1998 Renaud Deraison
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -17,6 +17,8 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+
+#include "ftp_funcs.h"
 
 #include "network.h"
 
@@ -115,7 +117,7 @@ ftp_get_pasv_address (int soc, struct sockaddr_in *addr)
   char buf[512];
   char *t, *s;
   unsigned char l[6];
-  unsigned long *a;
+  uint32_t *a;
   unsigned short *p;
 
   snprintf (buf, 7, "PASV\r\n");
@@ -169,7 +171,7 @@ ftp_get_pasv_address (int soc, struct sockaddr_in *addr)
     return 1;
   t[0] = 0;
   l[5] = (unsigned char) atoi (s);
-  a = (unsigned long *) l;
+  a = (uint32_t *) l;
   p = (unsigned short *) (l + 4);
 
   addr->sin_addr.s_addr = *a;

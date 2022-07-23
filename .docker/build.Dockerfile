@@ -15,8 +15,8 @@ RUN apt-get update && apt-get install --no-install-recommends --no-install-sugge
     libgpgme-dev \
     libjson-glib-dev \
     libksba-dev \
-    libnet1-dev \
     libpaho-mqtt-dev \
     libpcap-dev \
     libssh-gcrypt-dev \
+    libbsd-dev \
     && rm -rf /var/lib/apt/lists/*

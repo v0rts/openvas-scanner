@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Portions Copyright (C) 2006 Software in the Public Interest, Inc.
  * Based on work Copyright (C) 1998 - 2006 Tenable Network Security, Inc.
  *
@@ -30,10 +30,10 @@
 #include "sighand.h"
 #include "utils.h"
 
+#include <bsd/unistd.h>
 #include <errno.h>
 #include <glib.h>
-#include <gvm/base/prefs.h> /* for prefs_get() */
-#include <gvm/base/proctitle.h>
+#include <gvm/base/prefs.h>     /* for prefs_get() */
 #include <gvm/util/nvticache.h> /* for nvticache_new */
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,7 +64,7 @@
  *         "folder" and its subdirectories. Not added are directory names.
  *         NVT files are identified by the defined filename suffixes.
  */
-GSList *
+static GSList *
 collect_nvts (const char *folder, const char *subdir, GSList *files)
 {
   GDir *dir;
@@ -107,7 +107,7 @@ collect_nvts (const char *folder, const char *subdir, GSList *files)
   return files;
 }
 
-int
+static int
 calculate_eta (struct timeval start_time, int loaded, int total)
 {
   struct timeval current_time;
@@ -202,7 +202,7 @@ total_loading_plugins (void)
  *
  * @param[in]   current Number of loaded plugins.
  */
-void
+static void
 set_current_loading_plugins (int current)
 {
   if (loading_shm)
@@ -214,7 +214,7 @@ set_current_loading_plugins (int current)
  *
  * @param[in]   total Total number of plugins
  */
-void
+static void
 set_total_loading_plugins (int total)
 {
   if (loading_shm)
@@ -232,7 +232,7 @@ cleanup_leftovers (int num_files)
   size_t count;
   GSList *oids, *element;
 
-  proctitle_set ("openvas: Cleaning leftover NVTs.");
+  setproctitle ("openvas: Cleaning leftover NVTs.");
 
   count = nvticache_count ();
   if ((int) count <= num_files)
@@ -251,8 +251,8 @@ cleanup_leftovers (int num_files)
   g_slist_free_full (oids, g_free);
 }
 
-static void
-plugins_reload_from_dir (void *folder)
+static int
+plugins_reload_from_dir (const char *folder)
 {
   GSList *files = NULL, *f;
   int loaded_files = 0, num_files = 0;
@@ -265,7 +265,7 @@ plugins_reload_from_dir (void *folder)
       g_debug ("Could not determine the value of <plugins_folder>. "
                " Check %s\n",
                (char *) prefs_get ("config_file"));
-      exit (1);
+      return 1;
     }
 
   files = collect_nvts (folder, "", files);
@@ -295,10 +295,10 @@ plugins_reload_from_dir (void *folder)
           set_current_loading_plugins (loaded_files);
           percentile = (loaded_files * 100) / num_files;
           eta = calculate_eta (start_time, loaded_files, num_files);
-          proctitle_set ("openvas: Reloaded %d of %d NVTs"
-                         " (%d%% / ETA: %02d:%02d)",
-                         loaded_files, num_files, percentile, eta / 60,
-                         eta % 60);
+          setproctitle ("openvas: Reloaded %d of %d NVTs"
+                        " (%d%% / ETA: %02d:%02d)",
+                        loaded_files, num_files, percentile, eta / 60,
+                        eta % 60);
         }
       if (prefs_get_bool ("log_plugins_name_at_load"))
         g_message ("Loading %s", name);
@@ -311,9 +311,9 @@ plugins_reload_from_dir (void *folder)
       if (err_count == 20)
         {
           g_debug ("Stopped loading plugins: High number of errors.");
-          proctitle_set ("openvas: Error loading NVTs.");
+          setproctitle ("openvas: Error loading NVTs.");
           g_slist_free_full (files, g_free);
-          exit (1);
+          return 1;
         }
       f = g_slist_next (f);
     }
@@ -322,9 +322,9 @@ plugins_reload_from_dir (void *folder)
   g_slist_free_full (files, g_free);
   nasl_clean_inc ();
 
-  proctitle_set ("openvas: Reloaded all the NVTs.");
+  setproctitle ("openvas: Reloaded all the NVTs.");
 
-  exit (0);
+  return 0;
 }
 
 static void
@@ -385,15 +385,13 @@ int
 plugins_init (void)
 {
   int ret = 0;
-  pid_t child_pid;
   const char *plugins_folder = prefs_get ("plugins_folder");
 
   ret = plugins_cache_init ();
   if (ret)
     return ret;
 
-  child_pid = create_process (plugins_reload_from_dir, (void *) plugins_folder);
-  waitpid (child_pid, &ret, 0);
+  ret = plugins_reload_from_dir (plugins_folder);
   nvticache_save ();
   return ret;
 }

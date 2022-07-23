@@ -1,4 +1,4 @@
-/* Copyright (C) 2019-2021 Greenbone Networks GmbH
+/* Copyright (C) 2019-2022 Greenbone Networks GmbH
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -26,6 +26,6 @@
 #define _OPENVAS_H
 
 int
-openvas (int, char **);
+openvas (int, char **, char **);
 
 #endif /* not _OPENVAS_H */

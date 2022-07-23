@@ -1,4 +1,4 @@
-/* Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Copyright (C) 2009-2022 Greenbone Networks GmbH
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -425,7 +425,7 @@ nasl_win_cmd_exec (lex_ctxt *lexic)
     {
       /* UTF-16 case. */
       size_t length, diff;
-      GError *err = NULL;
+      err = NULL;
       char *tmp;
 
       diff = unicode - string->str + 1;

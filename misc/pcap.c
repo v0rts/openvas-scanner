@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Based on work Copyright (C) 1999 Renaud Deraison
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -24,6 +24,7 @@
 #include "support.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <gvm/base/logging.h>
 #include <gvm/base/networking.h>
 #include <ifaddrs.h>
@@ -91,7 +92,7 @@ getipv6routes (struct myroute *myroutes, int *numroutes);
  *
  * @return 0 on success, -1 on error.
  **/
-int
+static int
 ipv6_prefix_to_mask (unsigned prefix, struct in6_addr *mask)
 {
   struct in6_addr in6;
@@ -120,13 +121,11 @@ ipv6_prefix_to_mask (unsigned prefix, struct in6_addr *mask)
 int
 v6_is_local_ip (struct in6_addr *addr)
 {
-  int ifaces;
+  int i, j, ifaces, numroutes = 0;
   struct interface_info *ifs;
-  int i;
   static struct myroute myroutes[MAXROUTES];
-  int numroutes = 0;
-  struct in6_addr network;
-  struct in6_addr mask;
+  struct in6_addr network, mask;
+  bpf_u_int32 v4mappednet, v4mappedmask;
 
   if ((ifs = v6_getinterfaces (&ifaces)) == NULL)
     return -1;
@@ -135,10 +134,10 @@ v6_is_local_ip (struct in6_addr *addr)
     {
       for (i = 0; i < ifaces; i++)
         {
-          bpf_u_int32 net, mask;
           char errbuf[PCAP_ERRBUF_SIZE];
-          pcap_lookupnet (ifs[i].name, &net, &mask, errbuf);
-          if ((net & mask) == (addr->s6_addr32[3] & mask))
+          pcap_lookupnet (ifs[i].name, &v4mappednet, &v4mappedmask, errbuf);
+          if ((v4mappednet & v4mappedmask)
+              == (addr->s6_addr32[3] & v4mappedmask))
             return 1;
         }
     }
@@ -157,8 +156,8 @@ v6_is_local_ip (struct in6_addr *addr)
 
               if (ipv6_prefix_to_mask (myroutes[i].mask, &mask) == -1)
                 return -1;
-              for (int i = 0; i < (int) sizeof (struct in6_addr); i++)
-                network.s6_addr[i] = addr->s6_addr[i] & mask.s6_addr[i];
+              for (j = 0; j < (int) sizeof (struct in6_addr); j++)
+                network.s6_addr[j] = addr->s6_addr[j] & mask.s6_addr[j];
 
               g_debug ("comparing addresses %s and %s",
                        inet_ntop (AF_INET6, &network, addr1, sizeof (addr1)),
@@ -177,7 +176,7 @@ v6_is_local_ip (struct in6_addr *addr)
 /*
  * Taken straight out of Fyodor's Nmap
  */
-int
+static int
 v6_ipaddr2devname (char *dev, int sz, struct in6_addr *addr)
 {
   struct interface_info *mydevs;
@@ -208,7 +207,7 @@ v6_ipaddr2devname (char *dev, int sz, struct in6_addr *addr)
 /*
  * Taken straight out of Fyodor's Nmap
  */
-int
+static int
 ipaddr2devname (char *dev, int sz, struct in_addr *addr)
 {
   struct interface_info *mydevs;
@@ -592,7 +591,7 @@ v6_getsourceip (struct in6_addr *src, struct in6_addr *dst)
  *
  * @return 0 on success, -1 on error.
  **/
-int
+static int
 getipv4routes (struct myroute *myroutes, int *numroutes)
 {
   struct interface_info *mydevs;
@@ -954,8 +953,8 @@ v6_routethrough (struct in6_addr *dest, struct in6_addr *source)
                          myroutes[i].mask);
               return NULL;
             }
-          for (int i = 0; i < (int) sizeof (struct in6_addr); i++)
-            network.s6_addr[i] = dest->s6_addr[i] & mask.s6_addr[i];
+          for (int j = 0; j < (int) sizeof (struct in6_addr); j++)
+            network.s6_addr[j] = dest->s6_addr[j] & mask.s6_addr[j];
 
           g_debug (
             "comparing addresses %s and %s",
@@ -1326,4 +1325,36 @@ get_iface_from_ip (const char *local_ip)
   g_debug ("returning %s as device", if_name);
 
   return if_name;
+}
+
+/** @brief Get the interface index depending on the target's IP
+ *
+ * @param[in] ipaddr The ip address of the target.
+ * @param[out] ifindex the index of the selected iface
+ *
+ * @return 0 on success, otherwise -1.
+ */
+int
+get_iface_index (struct in6_addr *ipaddr, int *ifindex)
+{
+  struct in6_addr src_addr;
+  char *if_name, *ip_address;
+
+  // We get the local address to use, with the remote address.
+  memset (&src_addr, '\0', sizeof (struct in6_addr));
+  v6_getsourceip (&src_addr, ipaddr);
+  ip_address = addr6_as_str (&src_addr);
+
+  // Once with the local ip address, we get the source iface name
+  if_name = get_iface_from_ip (ip_address);
+  g_free (ip_address);
+  if (!if_name)
+    {
+      g_debug ("%s: Missing interface name", __func__);
+      return -1;
+    }
+
+  *ifindex = if_nametoindex (if_name);
+
+  return 0;
 }

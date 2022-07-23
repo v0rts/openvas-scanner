@@ -59,6 +59,7 @@
  * From ping examples in W.Richard Stevens "UNIX NETWORK PROGRAMMING" book.
  */
 static int np_in_cksum (p, n) u_short *p;
+
 int n;
 {
   register u_short answer;
@@ -1898,11 +1899,8 @@ get_icmp_element (lex_ctxt *lexic)
             get_var_size_by_name (lexic, "icmp") - (ip->ip_hl * 4) - 8;
           if (retc->size > 0)
             {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic warning "-Wdeprecated-declarations"
-              retc->x.str_val =
-                g_memdup (&(p[ip->ip_hl * 4 + 8]), retc->size + 1);
-#pragma GCC diagnostic pop
+              retc->x.str_val = g_malloc0 (retc->size + 1);
+              memcpy (retc->x.str_val, &(p[ip->ip_hl * 4 + 8]), retc->size + 1);
             }
           else
             {
@@ -2028,8 +2026,8 @@ forge_igmp_packet (lex_ctxt *lexic)
       igmp->cksum = np_in_cksum ((u_short *) igmp, sizeof (struct igmp));
       if (data != NULL)
         {
-          char *p = (char *) (pkt + ip->ip_hl * 4 + sizeof (struct igmp));
-          bcopy (p, data, len);
+          char *ptmp = (char *) (pkt + ip->ip_hl * 4 + sizeof (struct igmp));
+          bcopy (ptmp, data, len);
         }
       retc = alloc_typed_cell (CONST_DATA);
       retc->x.str_val = (char *) pkt;

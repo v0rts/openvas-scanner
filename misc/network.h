@@ -1,4 +1,4 @@
-/* Portions Copyright (C) 2009-2021 Greenbone Networks GmbH
+/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
  * Based on work Copyright (C) 1998 - 2007 Tenable Network Security, Inc.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -57,6 +57,11 @@ typedef enum openvas_encaps
 #define IS_ENCAPS_SSL(x) \
   ((x) >= OPENVAS_ENCAPS_SSLv23 && (x) <= OPENVAS_ENCAPS_TLScustom)
 
+/* Define FLAGS for setting other priorities in
+   open_stream_connection_ext */
+#define NO_PRIORITY_FLAGS 0
+#define INSECURE_DH_PRIME_BITS (1 << 0) // 1
+
 /* Plugin specific network functions */
 int
 open_sock_tcp (struct script_infos *, unsigned int, int);
@@ -79,12 +84,15 @@ get_sock_infos (int sock, int *r_transport, void **r_tls_session);
 unsigned short *
 getpts (char *, int *);
 
+void
+open_stream_tls_default_priorities (const char *p, const int pflag);
+
 int
 open_stream_connection (struct script_infos *, unsigned int, int, int);
 
 int
 open_stream_connection_ext (struct script_infos *, unsigned int, int, int,
-                            const char *);
+                            const char *, int);
 
 int
 open_stream_auto_encaps_ext (struct script_infos *, unsigned int port,
