@@ -25,6 +25,7 @@
 
 #include "utils.h"
 
+#include "../misc/plugutils.h"  /* for kb_item_set_int_with_main_kb_check */
 #include "../misc/scanneraux.h" /* for struct scan_globals */
 
 #include <errno.h>          /* for errno() */
@@ -93,7 +94,7 @@ files_add_size_translation (struct scan_globals *globals, const char *file_hash,
   // Register the mapping table if none there yet
   if (trans == NULL)
     {
-      trans = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+      trans = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
       globals->files_size_translation = trans;
     }
 
@@ -273,7 +274,7 @@ check_host_still_alive (kb_t kb, const char *hostname)
       g_message ("%s: Heartbeat check was not successful. The host %s has"
                  " been set as dead.",
                  __func__, hostname);
-      kb_item_set_int (kb, "Host/dead", 1);
+      kb_item_set_int_with_main_kb_check (kb, "Host/dead", 1);
       return 0;
     }
 

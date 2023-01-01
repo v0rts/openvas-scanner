@@ -494,7 +494,7 @@ nasl_send_arp_request (lex_ctxt *lexic)
   u_char mac_broadcast_addr[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
   u_char mac[6], *mac_aux;
   char filter[255];
-  u_char *answer;
+  u_char *answer = NULL;
   int answer_sz;
   int to = get_int_var_by_name (lexic, "pcap_timeout", 5);
 
@@ -544,6 +544,7 @@ nasl_send_arp_request (lex_ctxt *lexic)
 
   answer_sz =
     send_frame ((const u_char *) frame, frame_sz, 1, to, filter, dst, &answer);
+  g_free (frame);
   if (answer_sz == -2)
     {
       g_message ("%s: Not possible to send the frame", __func__);

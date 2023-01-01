@@ -1,12 +1,11 @@
 /* Portions Copyright (C) 2012-2022 Greenbone Networks GmbH
  * Based on work Copyright (C) 2002 - 2004 Tenable Network Security
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: GPL-2.0-only
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * version 2 as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -1570,7 +1569,8 @@ nasl_socket_cert_verify (lex_ctxt *lexic)
     }
 
   /* Init ca_list and load system CA trust list */
-  if ((ret = gnutls_x509_trust_list_init (&ca_list, ca_list_size)) < 0)
+  ret = gnutls_x509_trust_list_init (&ca_list, ca_list_size);
+  if (ret < 0)
     {
       g_free (cert);
       return NULL;

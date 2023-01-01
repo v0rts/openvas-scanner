@@ -24,8 +24,10 @@
 
 #include "nasl.h"
 
+#include "../misc/kb_cache.h" // for get_main_kb
 #include "../misc/network.h"
 #include "../misc/nvt_categories.h"
+#include "../misc/plugutils.h"
 #include "../misc/vendorversion.h"
 #include "exec.h"
 #include "nasl_lex_ctxt.h"
@@ -61,12 +63,6 @@ extern char *
 nasl_version (void);
 
 static void
-sighandler ()
-{
-  exit (0);
-}
-
-static void
 my_gnutls_log_func (int level, const char *text)
 {
   fprintf (stderr, "[%d] (%d) %s", getpid (), level, text);
@@ -81,7 +77,6 @@ init (struct in6_addr *ip, GSList *vhosts, kb_t kb)
 
   infos->standalone = 1;
   infos->key = kb;
-  infos->results = kb;
   infos->ip = ip;
   infos->vhosts = vhosts;
   if (prefs_get_bool ("test_empty_vhost"))
@@ -289,8 +284,6 @@ main (int argc, char **argv)
       fprintf (stderr, "** WARNING : packet forgery will not work\n");
       fprintf (stderr, "** as NASL is not running as root\n");
     }
-  signal (SIGINT, sighandler);
-  signal (SIGTERM, sighandler);
   signal (SIGPIPE, SIG_IGN);
 
   if (source_iface && gvm_source_iface_init (source_iface))
@@ -360,6 +353,7 @@ main (int argc, char **argv)
       if (rc)
         exit (1);
 
+      set_main_kb (kb);
       script_infos = init (&ip6, host->vhosts, kb);
       for (int i = 0; nasl_filenames[i] != NULL; i++)
         {

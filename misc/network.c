@@ -25,6 +25,7 @@
  */
 
 #include "../nasl/nasl_debug.h" /* for nasl_*_filename */
+#include "kb_cache.h"
 
 #include <arpa/inet.h> /* for inet_pton */
 #include <errno.h>
@@ -1970,7 +1971,7 @@ open_sock_tcp (struct script_infos *args, unsigned int port, int timeout)
         {
           g_message ("open_sock_tcp: %s:%d time-out.", ip_str, port);
           log_count++;
-          kb_item_set_int (kb, buffer, log_count);
+          kb_item_set_int_with_main_kb_check (kb, buffer, log_count);
         }
       if ((log_count >= attempts) && (attempts != 0))
         {
@@ -1985,7 +1986,7 @@ open_sock_tcp (struct script_infos *args, unsigned int port, int timeout)
               g_message ("open_sock_tcp: %s:%d too many timeouts. "
                          "This port will be set to closed.",
                          host_port_ip_str, port);
-              kb_item_set_int (kb, buffer, 0);
+              kb_item_set_int_with_main_kb_check (kb, buffer, 0);
 
               addr6_to_str (args->ip, host_port_ip_str);
               snprintf (
@@ -1994,7 +1995,9 @@ open_sock_tcp (struct script_infos *args, unsigned int port, int timeout)
                 " was set to closed.",
                 host_port_ip_str,
                 plug_current_vhost () ? plug_current_vhost () : " ", port);
-              kb_item_push_str (args->results, "internal/results", buffer);
+
+              kb_item_push_str_with_main_kb_check (get_main_kb (),
+                                                   "internal/results", buffer);
             }
         }
       g_free (ip_str);

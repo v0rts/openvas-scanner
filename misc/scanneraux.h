@@ -22,8 +22,8 @@
  * @brief Auxiliary structures for scanner.
  */
 
-#ifndef _OPENVAS_SCANNERAUX_H
-#define _OPENVAS_SCANNERAUX_H
+#ifndef MISC_SCANNERAUX_H
+#define MISC_SCANNERAUX_H
 
 #include <glib.h>
 #include <gvm/base/nvti.h>
@@ -34,6 +34,7 @@ struct scan_globals
   GHashTable *files_translation;
   GHashTable *files_size_translation;
   char *scan_id;
+  pid_t host_pid;
 };
 
 struct host_info;
@@ -41,8 +42,8 @@ struct host_info;
 struct script_infos
 {
   struct scan_globals *globals;
-  kb_t key;
-  kb_t results;
+  struct ipc_context *ipc_context;
+  kb_t key; // nvt_kb
   nvti_t *nvti;
   char *oid;
   char *name;
@@ -53,4 +54,8 @@ struct script_infos
   int denial_port;
   int alive;
 };
-#endif /* not _OPENVAS_SCANNERAUX_H */
+
+void
+destroy_scan_globals (struct scan_globals *);
+
+#endif /* not MISC_SCANNERAUX_H */

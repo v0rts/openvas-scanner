@@ -28,6 +28,7 @@
 
 #include "nasl_host.h"
 
+#include "../misc/ipc_openvas.h"
 #include "../misc/network.h"
 #include "../misc/pcap_openvas.h" /* for v6_is_local_ip */
 #include "../misc/plugutils.h"    /* for plug_get_host_fqdn */
@@ -49,6 +50,11 @@
 #include <sys/ioctl.h>
 #include <unistd.h> /* for gethostname */
 
+#undef G_LOG_DOMAIN
+/**
+ * @brief GLib log domain.
+ */
+#define G_LOG_DOMAIN "sd   nasl"
 tree_cell *
 get_hostnames (lex_ctxt *lexic)
 {
@@ -116,8 +122,9 @@ get_hostname_source (lex_ctxt *lexic)
 tree_cell *
 add_hostname (lex_ctxt *lexic)
 {
-  pid_t host_pid;
-  char buffer[4096], *lower;
+  struct ipc_data *hn = NULL;
+  char *lower;
+  const char *json = NULL;
   char *value = get_str_var_by_name (lexic, "hostname");
   char *source = get_str_var_by_name (lexic, "source");
 
@@ -128,22 +135,23 @@ add_hostname (lex_ctxt *lexic)
     }
   if (!source || !*source)
     source = "NASL";
-
   /* Add to current process' vhosts list. */
   lower = g_ascii_strdown (value, -1);
+  hn = ipc_data_type_from_hostname (source, strlen (source), lower,
+                                    strlen (lower));
+  json = ipc_data_to_json (hn);
+  ipc_data_destroy (&hn);
   if (plug_add_host_fqdn (lexic->script_infos, lower, source))
     goto end_add_hostname;
 
-  /* Push to KB. Signal host process to fetch it. */
-  kb_item_push_str (lexic->script_infos->key, "internal/vhosts", lower);
-  snprintf (buffer, sizeof (buffer), "internal/source/%s", lower);
-  kb_item_push_str (lexic->script_infos->key, buffer, source);
-  host_pid = kb_item_get_int (lexic->script_infos->key, "internal/hostpid");
-  if (host_pid > 0)
-    kill (host_pid, SIGUSR2);
+  // send it to host process to extend vhosts list there
+  if (ipc_send (lexic->script_infos->ipc_context, IPC_MAIN, json, strlen (json))
+      < 0)
+    g_warning ("Unable to send %s to host process", lower);
 
 end_add_hostname:
   g_free (lower);
+  g_free ((void *) json);
   return NULL;
 }
 
@@ -546,15 +554,14 @@ nasl_same_host (lex_ctxt *lexic)
 
   for (i = 0; i < 2; i++)
     g_free (a[i]);
-  if (cmp_hostname)
+
+  for (i = 0; i < 2; i++)
     {
-      for (i = 0; i < 2; i++)
-        {
-          for (j = 0; j < names_nb[i]; j++)
-            g_free (names[i][j]);
-          g_free (names[i]);
-        }
+      for (j = 0; j < names_nb[i]; j++)
+        g_free (names[i][j]);
+      g_free (names[i]);
     }
+
   return retc;
 }
 

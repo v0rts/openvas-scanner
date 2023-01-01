@@ -93,6 +93,16 @@ struct snmp_result
 
 typedef struct snmp_result *snmp_result_t;
 
+static void
+destroy_snmp_result (snmp_result_t result)
+{
+  if (result == NULL)
+    return;
+  g_free (result->name);
+  g_free (result->oid_str);
+  g_free (result);
+}
+
 /*
  * @brief Check that protocol value is valid.
  *
@@ -134,7 +144,7 @@ array_from_snmp_result (int ret, const snmp_result_t result)
   /* Name */
   memset (&v, 0, sizeof v);
   v.var_type = VAR2_STRING;
-  v.v.v_str.s_val = (unsigned char *) result->name;
+  v.v.v_str.s_val = (unsigned char *) g_strdup (result->name);
   v.v.v_str.s_siz = strlen (result->name);
   add_var_to_list (retc->x.ref_val, 1, &v);
   /* OID */
@@ -142,7 +152,7 @@ array_from_snmp_result (int ret, const snmp_result_t result)
     {
       memset (&v, 0, sizeof v);
       v.var_type = VAR2_STRING;
-      v.v.v_str.s_val = (unsigned char *) result->oid_str;
+      v.v.v_str.s_val = (unsigned char *) g_strdup (result->oid_str);
       v.v.v_str.s_siz = strlen (result->oid_str);
       add_var_to_list (retc->x.ref_val, 2, &v);
     }
@@ -630,6 +640,7 @@ snmpv3_get (const snmpv3_request_t request, snmp_result_t result)
 static tree_cell *
 nasl_snmpv1v2c_get (lex_ctxt *lexic, int version, u_char action)
 {
+  tree_cell *retc = NULL;
   const char *proto;
   char peername[2048];
   int port, ret;
@@ -639,7 +650,6 @@ nasl_snmpv1v2c_get (lex_ctxt *lexic, int version, u_char action)
   static char *next_oid_str;
 
   request = g_malloc0 (sizeof (struct snmpv1v2_request));
-  result = g_malloc0 (sizeof (struct snmp_result));
 
   request->version = version;
   request->action = action;
@@ -654,15 +664,26 @@ nasl_snmpv1v2c_get (lex_ctxt *lexic, int version, u_char action)
     request->oid_str = oid_str;
 
   if (!proto || !request->community || !request->oid_str)
-    return array_from_snmp_error (-2, "Missing function argument");
+    {
+      g_free (request);
+      return array_from_snmp_error (-2, "Missing function argument");
+    }
   if (port < 0 || port > 65535)
-    return array_from_snmp_error (-2, "Invalid port value");
+    {
+      g_free (request);
+      return array_from_snmp_error (-2, "Invalid port value");
+    }
   if (!proto_is_valid (proto))
-    return array_from_snmp_error (-2, "Invalid protocol value");
+    {
+      g_free (request);
+      return array_from_snmp_error (-2, "Invalid protocol value");
+    }
 
   g_snprintf (peername, sizeof (peername), "%s:%s:%d", proto,
               plug_get_host_ip_str (lexic->script_infos), port);
   request->peername = peername;
+
+  result = g_malloc0 (sizeof (struct snmp_result));
   ret = snmpv1v2c_get (request, result);
 
   // Hack the OID string to adjust format. Replace 'iso.' with '.1.'
@@ -681,7 +702,9 @@ nasl_snmpv1v2c_get (lex_ctxt *lexic, int version, u_char action)
      which will be free()'d later */
   g_free (request);
 
-  return array_from_snmp_result (ret, result);
+  retc = array_from_snmp_result (ret, result);
+  destroy_snmp_result (result);
+  return retc;
 }
 
 tree_cell *
@@ -711,6 +734,7 @@ nasl_snmpv2c_getnext (lex_ctxt *lexic)
 static tree_cell *
 nasl_snmpv3_get_action (lex_ctxt *lexic, u_char action)
 {
+  tree_cell *retc = NULL;
   const char *proto, *authproto, *privproto;
   char peername[2048];
   int port, ret;
@@ -719,7 +743,6 @@ nasl_snmpv3_get_action (lex_ctxt *lexic, u_char action)
   char *oid_str;
   static char *next_oid_str;
 
-  result = g_malloc0 (sizeof (struct snmp_result));
   request = g_malloc0 (sizeof (struct snmpv3_request));
 
   request->action = action;
@@ -741,23 +764,36 @@ nasl_snmpv3_get_action (lex_ctxt *lexic, u_char action)
 
   if (!proto || !request->username || !request->authpass || !request->oid_str
       || !authproto)
-    return array_from_snmp_error (-2, "Missing function argument");
-
+    {
+      g_free (request);
+      return array_from_snmp_error (-2, "Missing function argument");
+    }
   if (port < 0 || port > 65535)
-    return array_from_snmp_error (-2, "Invalid port value");
-
+    {
+      g_free (request);
+      return array_from_snmp_error (-2, "Invalid port value");
+    }
   if (!proto_is_valid (proto))
-    return array_from_snmp_error (-2, "Invalid protocol value");
+    {
+      g_free (request);
+      return array_from_snmp_error (-2, "Invalid protocol value");
+    }
 
   if (!privproto || !request->privpass)
-    return array_from_snmp_error (-2, "Missing privproto or privpass");
+    {
+      g_free (request);
+      return array_from_snmp_error (-2, "Missing privproto or privpass");
+    }
 
   if (!strcasecmp (authproto, "md5"))
     request->authproto = 0;
   else if (!strcasecmp (authproto, "sha1"))
     request->authproto = 1;
   else
-    return array_from_snmp_error (-2, "authproto should be md5 or sha1");
+    {
+      g_free (request);
+      return array_from_snmp_error (-2, "authproto should be md5 or sha1");
+    }
 
   if (privproto)
     {
@@ -766,12 +802,17 @@ nasl_snmpv3_get_action (lex_ctxt *lexic, u_char action)
       else if (!strcasecmp (privproto, "aes"))
         request->privproto = 1;
       else
-        return array_from_snmp_error (-2, "privproto should be des or aes");
+        {
+          g_free (request);
+          return array_from_snmp_error (-2, "privproto should be des or aes");
+        }
     }
 
   g_snprintf (peername, sizeof (peername), "%s:%s:%d", proto,
               plug_get_host_ip_str (lexic->script_infos), port);
   request->peername = peername;
+
+  result = g_malloc0 (sizeof (struct snmp_result));
   ret = snmpv3_get (request, result);
 
   // Hack the OID string to adjust format. Replace 'iso.' with '.1.'
@@ -790,7 +831,9 @@ nasl_snmpv3_get_action (lex_ctxt *lexic, u_char action)
      which will be free()'d later */
   g_free (request);
 
-  return array_from_snmp_result (ret, result);
+  retc = array_from_snmp_result (ret, result);
+  destroy_snmp_result (result);
+  return retc;
 }
 
 tree_cell *

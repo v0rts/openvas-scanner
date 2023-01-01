@@ -32,6 +32,7 @@
 #include "nasl_tree.h"
 #include "nasl_var.h"
 
+#include <errno.h>       /* for errno */
 #include <glib.h>        /* for g_get_current_dir and others */
 #include <glib/gstdio.h> /* for g_chdir */
 #include <gvm/base/logging.h>
@@ -1380,11 +1381,14 @@ nasl_exec (lex_ctxt *lexic, tree_cell *st)
               len2 = (s2 == NULL ? 0 : strlen (s2));
             }
 
+          /* if p1 is null, last condition p=memem() will not be evaluated
+           * and p remains NULL */
           if (len2 == 0 || len1 < len2
               || (p1 != NULL && (p = memmem (p1, len1, p2, len2)) == NULL))
             {
               s3 = g_malloc0 (len1 + 1);
-              memcpy (s3, p1, len1);
+              if (p1 != NULL)
+                memcpy (s3, p1, len1);
               ret = alloc_typed_cell (flag);
               ret->x.str_val = s3;
               ret->size = len1;
@@ -1402,7 +1406,7 @@ nasl_exec (lex_ctxt *lexic, tree_cell *st)
                   s3 = g_malloc0 (sz + 1);
                   if (p - p1 > 0)
                     memcpy (s3, p1, p - p1);
-                  if (sz > p - p1)
+                  if (p != NULL && sz > p - p1)
                     memcpy (s3 + (p - p1), p + len2, sz - (p - p1));
                 }
               ret = alloc_typed_cell (flag);
@@ -1645,8 +1649,8 @@ exec_nasl_script (struct script_infos *script_infos, int mode)
 
   if (g_chdir (newdir) != 0)
     {
-      g_message ("%s: Not able to open nor to locate it in include paths",
-                 name);
+      g_message ("%s: Not able to change working directory to %s (%d [%s]).",
+                 __func__, newdir, errno, strerror (errno));
       g_free (old_dir);
       g_free (newdir);
       return -1;

@@ -18,29 +18,6 @@
 
 ## Config
 
-## Project version
-# The following three variables should be set through the project command once
-# we require CMake >= 3.0
-set (NASL_VERSION_MAJOR 21)
-set (NASL_VERSION_MINOR 10)
-set (NASL_VERSION_PATCH 0)
-
-if (PROJECT_BETA_RELEASE)
-  set (NASL_VERSION_SUFFIX "+beta${PROJECT_BETA_RELEASE}")
-else (PROJECT_BETA_RELEASE)
-  set (NASL_VERSION_SUFFIX ".${PROJECT_VERSION_PATCH}")
-endif (PROJECT_BETA_RELEASE)
-
-set (NASL_VERSION_STRING "${NASL_VERSION_MAJOR}.${NASL_VERSION_MINOR}${NASL_VERSION_SUFFIX}")
-
-
-if (PROJECT_BETA_RELEASE)
-  set (NASL_PACKAGE_VERSION "${NASL_VERSION_STRING}${PROJECT_VERSION_GIT}")
-else (PROJECT_BETA_RELEASE)
-  set (NASL_PACKAGE_VERSION "${NASL_VERSION_STRING}")
-endif (PROJECT_BETA_RELEASE)
-
-set (NASL_VERSION "${NASL_VERSION_STRING}")
 
 include (FindPkgConfig)
 
@@ -49,6 +26,7 @@ if (NOT PKG_CONFIG_FOUND)
 endif (NOT PKG_CONFIG_FOUND)
 
 pkg_check_modules (GLIB REQUIRED glib-2.0>=2.42)
+pkg_check_modules (GLIB_JSON REQUIRED json-glib-1.0>=1.4.4)
 pkg_check_modules (GIO REQUIRED gio-2.0)
 pkg_check_modules (GNUTLS REQUIRED gnutls>=3.2.15)
 pkg_check_modules (LIBGVM_BASE REQUIRED libgvm_base>=22.4)
@@ -195,6 +173,8 @@ add_definitions (-DOPENVAS_NASL_VERSION="${PROJECT_VERSION_STRING}")
 add_definitions (-DOPENVAS_GPG_BASE_DIR="${OPENVAS_GPG_BASE_DIR}")
 
 include_directories (${GLIB_INCLUDE_DIRS}
+                     ${LIBOPENVAS_MISC_INCLUDE_DIRS}
+                     ${GLIB_JSON_INCLUDE_DIRS} 
                      ${GPGME_INCLUDE_DIRS}
                      ${LIBSSH_INCLUDE_DIRS}
                      ${LIBGVM_BASE_INCLUDE_DIRS}
@@ -211,6 +191,8 @@ set_target_properties (openvas_nasl_shared PROPERTIES SOVERSION "${PROJECT_VERSI
 set_target_properties (openvas_nasl_shared PROPERTIES VERSION "${PROJECT_VERSION_STRING}")
 # line below is needed so it also works with no-undefined which is e.g. used by Mandriva
 target_link_libraries (openvas_nasl_shared openvas_misc_shared ${GLIB_LDFLAGS}
+                         ${LIBOPENVAS_MISC_LDFLAGS}
+                         ${GLIB_JSON_LDFLAGS} 
                          ${GCRYPT_LDFLAGS} ${GPGME_LDFLAGS} m
                          ${LIBGVM_BASE_LDFLAGS}
                          ${LIBGVM_UTIL_LDFLAGS}
@@ -225,7 +207,7 @@ target_link_libraries (openvas-nasl openvas_nasl_shared openvas_misc_shared ${GN
 
 # Link the openvas-nasl-lint executable
 add_executable (openvas-nasl-lint nasl-lint.c)
-target_link_libraries (openvas-nasl-lint openvas_nasl_shared openvas_misc_shared ${GLIB_LDFLAGS} ${GIO_LDFLAGS})
+target_link_libraries (openvas-nasl-lint openvas_nasl_shared openvas_misc_shared ${GLIB_LDFLAGS} ${GLIB_JSON_LDFLAGS} ${GIO_LDFLAGS})
 
 ## Install
 
@@ -234,9 +216,10 @@ install (TARGETS openvas_nasl_shared openvas-nasl openvas-nasl-lint
          LIBRARY DESTINATION ${LIBDIR}
          ARCHIVE DESTINATION ${LIBDIR})
 
-install (FILES ${CMAKE_SOURCE_DIR}/doc/openvas-nasl.1
+
+install (FILES ${CMAKE_SOURCE_DIR}/doc/man/openvas-nasl.1
          DESTINATION ${DATADIR}/man/man1 )
 
-install (FILES ${CMAKE_SOURCE_DIR}/doc/openvas-nasl-lint.1
-         DESTINATION ${DATADIR}/man/man1 )
+install (FILES ${CMAKE_SOURCE_DIR}/doc/man/openvas-nasl-lint.1
+         DESTINATION ${DATADIR}/man/man1 )   
 ## End

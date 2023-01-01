@@ -23,8 +23,8 @@
  * @brief pluginload.c header.
  */
 
-#ifndef _OPENVAS_PLUGINLOAD_H
-#define _OPENVAS_PLUGINLOAD_H
+#ifndef OPENVAS_PLUGINLOAD_H
+#define OPENVAS_PLUGINLOAD_H
 
 #include "../misc/network.h"
 #include "../misc/scanneraux.h"
@@ -57,6 +57,6 @@ nasl_file_check (const char *, const char *);
 
 int
 nasl_plugin_launch (struct scan_globals *, struct in6_addr *, GSList *, kb_t,
-                    kb_t, const char *);
+                    const char *);
 
 #endif

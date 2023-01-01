@@ -143,7 +143,7 @@ update_running_processes (kb_t main_kb, kb_t kb)
             {
               char *oid = processes[i].plugin->oid;
 
-              if (is_alive)
+              if (is_alive) // Alive and timed out
                 {
                   char msg[2048];
                   if (log_whole)
@@ -154,7 +154,8 @@ update_running_processes (kb_t main_kb, kb_t kb)
                               "ERRMSG|||%s||| |||general/tcp|||%s|||"
                               "NVT timed out after %d seconds.",
                               hostname, oid ? oid : " ", processes[i].timeout);
-                  kb_item_push_str (main_kb, "internal/results", msg);
+                  kb_item_push_str_with_main_kb_check (main_kb,
+                                                       "internal/results", msg);
 
                   /* Check for max VTs timeouts */
                   if (max_nvt_timeouts_reached ())
@@ -168,13 +169,17 @@ update_running_processes (kb_t main_kb, kb_t kb)
                                       "Host has been marked as dead. Too many "
                                       "NVT_TIMEOUTs.",
                                       hostname);
-                          kb_item_push_str (main_kb, "internal/results", msg);
+                          kb_item_push_str_with_main_kb_check (
+                            main_kb, "internal/results", msg);
                         }
                     }
 
                   ret_terminate = terminate_process (processes[i].pid);
                   if (ret_terminate == 0)
                     {
+                      /* Since the plugin process is a group leader process
+                       * we can send the signal to -PID process to kill
+                       * also the plugin's child processes. */
                       terminate_process (processes[i].pid * -1);
                       num_running_processes--;
                       processes[i].plugin->running_state = PLUGIN_STATUS_DONE;
@@ -208,6 +213,9 @@ update_running_processes (kb_t main_kb, kb_t kb)
                     }
                   while (e < 0 && errno == EINTR);
 
+                  /* Since the plugin process is a group leader process
+                   * we can send the signal to -PID process to kill
+                   * also the plugin's child processes. */
                   terminate_process (processes[i].pid * -1);
                   num_running_processes--;
                   processes[i].plugin->running_state = PLUGIN_STATUS_DONE;
@@ -361,6 +369,9 @@ pluginlaunch_stop (void)
     {
       if (processes[i].pid > 0)
         {
+          /* Since the plugin process is a group leader process
+           * we can send the signal to -PID process to kill
+           * also the plugin's child processes. */
           terminate_process (processes[i].pid * -1);
           num_running_processes--;
           processes[i].plugin->running_state = PLUGIN_STATUS_DONE;
@@ -477,8 +488,7 @@ plugin_launch (struct scan_globals *globals, struct scheduler_plugin *plugin,
   processes[p].plugin = plugin;
   processes[p].timeout = plugin_timeout (nvti);
   gettimeofday (&(processes[p].start), NULL);
-  processes[p].pid =
-    nasl_plugin_launch (globals, ip, vhosts, kb, main_kb, plugin->oid);
+  processes[p].pid = nasl_plugin_launch (globals, ip, vhosts, kb, plugin->oid);
 
   if (processes[p].pid > 0)
     num_running_processes++;
@@ -541,6 +551,9 @@ pluginlaunch_wait_for_free_process (kb_t main_kb, kb_t kb)
              "Waiting for free slot for processes.",
              __func__, num_running_processes, max_running_processes);
 
+  /* Be careful with changing the max_running_process value.
+   * The plugin scheduler can change this value for running one plugin at
+   * time. */
   while (
     (num_running_processes >= max_running_processes)
     || (num_running_processes > 0 && (check_memory () || check_sysload ())))
@@ -552,8 +565,24 @@ pluginlaunch_wait_for_free_process (kb_t main_kb, kb_t kb)
       assert (ts.tv_sec);
       sigemptyset (&mask);
       sigaddset (&mask, SIGCHLD);
-      if (sigtimedwait (&mask, NULL, &ts) < 0 && errno != EAGAIN)
-        g_warning ("%s: %s", __func__, strerror (errno));
+      sigaddset (&mask, SIGUSR1);
+      /* Wait here for the shortest plugins timeout or for a child which ended.
+       * Also, it handles signal SIGUSR1 to stop a scan. Otherwise the signa is
+       * ignored, the plugin is never stopped and the scanner keeps waiting. */
+      int sig = sigtimedwait (&mask, NULL, &ts);
+      if (sig < 0 && errno != EAGAIN)
+        g_warning ("%s: %s (%d)", __func__, strerror (errno), errno);
+      else if (sig == SIGUSR1)
+        {
+          /* SIGUSR1 signal is sent during scan stop to all host processes.
+             Therefore pluginlaunch_stop() is called here, for the
+             special case in which we are waiting for the last plugin, of the
+             last host, to finish.
+          */
+          pluginlaunch_stop ();
+        }
+      // cleanup ipcc cache
+      procs_cleanup_children ();
       update_running_processes (main_kb, kb);
     }
 }

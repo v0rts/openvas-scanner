@@ -25,7 +25,9 @@
 
 #include "plugutils.h"
 
-#include "network.h" // for OPENVAS_ENCAPS_IP
+#include "kb_cache.h" // for get_main_kb
+#include "network.h"  // for OPENVAS_ENCAPS_IP
+#include "scan_id.h"
 #include "support.h" // for g_memdup2 workaround
 
 #include <errno.h>               // for errno
@@ -264,18 +266,18 @@ plug_get_host_fqdn (struct script_infos *args)
     return g_strdup (current_vhost->value);
   while (vhosts)
     {
-      pid_t pid = plug_fork_child (args->key);
+      int ret = plug_fork_child (args->key);
 
-      if (pid == 0)
+      if (ret == 0)
         {
           current_vhost = vhosts->data;
           return g_strdup (current_vhost->value);
         }
-      else if (pid == -1)
+      else if (ret == -1)
         return NULL;
       vhosts = vhosts->next;
     }
-  exit (0);
+  _exit (0);
 }
 
 GSList *
@@ -380,6 +382,244 @@ msg_type_to_str (msg_t type)
 }
 
 /**
+ * @brief Check if the current main kb corresponds to the
+ *        original scan main kb.
+ * @description Compares the scan id in get_scan_id, set at the beginning
+ *              of the scan, with the one found in the main kb.
+ *              Therefore it is mandatory that the global main_kb
+ *              variable to be set.
+ *              It helps to detect that the kb was not taken by another
+ *              task/scan, and that the current plugins does not stores
+ *              results in a wrong kb.
+ *
+ * @param main_kb Current main kb.
+ *
+ * @return 0 on success, -1 on missing global scan_id, -2 on missing
+ * current_scan_id, -3 when inconsistent.
+ */
+int
+check_kb_inconsistency (kb_t main_kb)
+{
+  const char *original_scan_id;
+  char *current_scan_id;
+
+  original_scan_id = get_scan_id ();
+  if (original_scan_id == NULL)
+    return -1;
+  current_scan_id = kb_item_get_str (main_kb, ("internal/scanid"));
+  if (current_scan_id == NULL)
+    return -2;
+
+  if (!g_strcmp0 (original_scan_id, current_scan_id))
+    {
+      g_free (current_scan_id);
+      return 0;
+    }
+
+  g_warning ("KB inconsitency. %s writing into %s KB", original_scan_id,
+             current_scan_id);
+  g_free (current_scan_id);
+  return -3;
+}
+
+/**
+ * @brief calls check_kb_inconsistency and logs as debug when local scan_id is
+ missing.
+
+ * @description Compares the scan id in get_scan_id, set at the beginning
+ *              of the scan, with the one found in the main kb.
+ *              Therefore it is mandatory that the global main_kb
+ *              variable to be set.
+ *              It helps to detect that the kb was not taken by another
+ *              task/scan, and that the current plugins does not stores
+ *              results in a wrong kb.
+ *
+ * @return 0 on success, -1 on inconsistency.
+ */
+static int
+check_kb_inconsistency_log (void)
+{
+  char *current_scan_id;
+  kb_t kb = get_main_kb ();
+  int result = check_kb_inconsistency (kb);
+  switch (result)
+    {
+    case -3:
+      current_scan_id = kb_item_get_str (kb, ("internal/scanid"));
+      g_warning (
+        "%s: scan_id (%s) does not match global scan_id (%s); abort to "
+        "prevent data corruption",
+        __func__, current_scan_id, get_scan_id ());
+      g_free (current_scan_id);
+      _exit (1);
+      break;
+    case -1:
+      // a call without global scan id can happen in e.g. nasl-lint or
+      // openvas-nasl calls
+      break;
+    case -2:
+      g_warning (
+        "%s: No internal/scanid found; abort to prevent data corruption.",
+        __func__);
+      _exit (1);
+      break;
+    default:
+      {
+        // nothing
+      }
+    }
+  return 0;
+}
+
+/**
+ * @brief Check if the current kb corresponds to the
+ *        original scanid, if it matches it kb_item_push_str.
+ * @description Compares the scan id in get_scan_id, set at the beginning
+ *              of the scan, with the one found in the main kb.
+ *              Therefore it is mandatory that the global main_kb
+ *              variable to be set.
+ *              It helps to detect that the kb was not taken by another
+ *              task/scan, and that the current plugins does not stores
+ *              results in a wrong kb.
+ *
+ * @param kb Kb where to store the item into.
+ * @param name key for the given value.
+ * @param value to store under key within kb.
+ *
+ * @return 0 on success, -1 on inconsistency.
+ */
+int
+kb_item_push_str_with_main_kb_check (kb_t kb, const char *name,
+                                     const char *value)
+{
+  int result = check_kb_inconsistency_log ();
+  return result == 0 ? kb_item_push_str (kb, name, value) : -1;
+}
+
+/**
+ * @brief Check if the current kb corresponds to the
+ *        original scanid, if it matches it call kb_item_set_str.
+ * @description Compares the scan id in get_scan_id, set at the beginning
+ *              of the scan, with the one found in the main kb.
+ *              Therefore it is mandatory that the global main_kb
+ *              variable to be set.
+ *              It helps to detect that the kb was not taken by another
+ *              task/scan, and that the current plugins does not stores
+ *              results in a wrong kb.
+ *
+ * @param kb Kb where to store the item into.
+ * @param name key for the given value.
+ * @param value to store under key within kb.
+ *
+ * @return 0 on success, -1 on inconsistency.
+ */
+int
+kb_item_set_str_with_main_kb_check (kb_t kb, const char *name,
+                                    const char *value, size_t len)
+{
+  int result = check_kb_inconsistency_log ();
+  return result == 0 ? kb_item_set_str (kb, name, value, len) : -1;
+}
+
+/**
+ * @brief Check if the current kb corresponds to the
+ *        original scanid, if it matches it call kb_item_add_str_unique.
+ * @description Compares the scan id in get_scan_id, set at the beginning
+ *              of the scan, with the one found in the main kb.
+ *              Therefore it is mandatory that the global main_kb
+ *              variable to be set.
+ *              It helps to detect that the kb was not taken by another
+ *              task/scan, and that the current plugins does not stores
+ *              results in a wrong kb.
+ *
+ * @param kb Kb where to store the item into.
+ * @param name key for the given value.
+ * @param value to store under key within kb.
+ *
+ * @return 0 on success, -1 on inconsistency.
+ */
+int
+kb_item_add_str_unique_with_main_kb_check (kb_t kb, const char *name,
+                                           const char *value, size_t len,
+                                           int pos)
+{
+  int result = check_kb_inconsistency_log ();
+  return result == 0 ? kb_item_add_str_unique (kb, name, value, len, pos) : -1;
+}
+
+/**
+ * @brief Check if the current kb corresponds to the
+ *        original scanid, if it matches it call kb_item_set_int.
+ * @description Compares the scan id in get_scan_id, set at the beginning
+ *              of the scan, with the one found in the main kb.
+ *              Therefore it is mandatory that the global main_kb
+ *              variable to be set.
+ *              It helps to detect that the kb was not taken by another
+ *              task/scan, and that the current plugins does not stores
+ *              results in a wrong kb.
+ *
+ * @param kb Kb where to store the item into.
+ * @param name key for the given value.
+ * @param value to store under key within kb.
+ *
+ * @return 0 on success, -1 on inconsistency.
+ */
+int
+kb_item_set_int_with_main_kb_check (kb_t kb, const char *name, int value)
+{
+  int result = check_kb_inconsistency_log ();
+  return result == 0 ? kb_item_set_int (kb, name, value) : -1;
+}
+
+/**
+ * @brief Check if the current kb corresponds to the
+ *        original scanid, if it matches it call kb_item_add_int.
+ * @description Compares the scan id in get_scan_id, add at the beginning
+ *              of the scan, with the one found in the main kb.
+ *              Therefore it is mandatory that the global main_kb
+ *              variable to be set.
+ *              It helps to detect that the kb was not taken by another
+ *              task/scan, and that the current plugins does not stores
+ *              results in a wrong kb.
+ *
+ * @param kb Kb where to store the item into.
+ * @param name key for the given value.
+ * @param value to store under key within kb.
+ *
+ * @return 0 on success, -1 on inconsistency.
+ */
+int
+kb_item_add_int_with_main_kb_check (kb_t kb, const char *name, int value)
+{
+  int result = check_kb_inconsistency_log ();
+  return result == 0 ? kb_item_add_int (kb, name, value) : -1;
+}
+
+/**
+ * @brief Check if the current kb corresponds to the
+ *        original scanid, if it matches it call kb_item_add_int_unique.
+ * @description Compares the scan id in get_scan_id, add at the beginning
+ *              of the scan, with the one found in the main kb.
+ *              Therefore it is mandatory that the global main_kb
+ *              variable to be set.
+ *              It helps to detect that the kb was not taken by another
+ *              task/scan, and that the current plugins does not stores
+ *              results in a wrong kb.
+ *
+ * @param kb Kb where to store the item into.
+ * @param name key for the given value.
+ * @param value to store under key within kb.
+ *
+ * @return 0 on success, -1 on inconsistency.
+ */
+int
+kb_item_add_int_unique_with_main_kb_check (kb_t kb, const char *name, int value)
+{
+  int result = check_kb_inconsistency_log ();
+  return result == 0 ? kb_item_add_int_unique (kb, name, value) : -1;
+}
+
+/**
  * @brief Post a security message (e.g. LOG, NOTE, WARNING ...).
  *
  * @param oid   The oid of the NVT
@@ -401,7 +641,6 @@ proto_post_wrapped (const char *oid, struct script_infos *desc, int port,
   GError *err = NULL;
   GString *action_str;
   gsize length;
-  kb_t kb;
 
   /* Should not happen, just to avoid trouble stop here if no NVTI found */
   if (!oid)
@@ -436,8 +675,9 @@ proto_post_wrapped (const char *oid, struct script_infos *desc, int port,
       g_string_free (action_str, TRUE);
       return;
     }
-  kb = plug_get_results_kb (desc);
-  kb_item_push_str (kb, "internal/results", data);
+
+  kb_item_push_str_with_main_kb_check (get_main_kb (), "internal/results",
+                                       data);
   g_free (data);
   g_free (buffer);
   g_string_free (action_str, TRUE);
@@ -831,12 +1071,6 @@ plug_get_kb (struct script_infos *args)
   return args->key;
 }
 
-kb_t
-plug_get_results_kb (struct script_infos *args)
-{
-  return args->results;
-}
-
 static void
 plug_get_key_sigchld ()
 {
@@ -856,16 +1090,26 @@ sig_n (int signo, void (*fnc) (int))
   sigaction (signo, &sa, (struct sigaction *) 0);
 }
 
+/**
+ * @brief Spawns a new child process. Setups everything that is needed for a new
+ * process. Child must be handled by caller
+ *
+ * @param kb for redis connection
+ * @return int 0 for the child process, 1 for the parent process and -1 on
+ * failure
+ */
 static int
 plug_fork_child (kb_t kb)
 {
   pid_t pid;
 
+  // TODO change forking to official channels
   if ((pid = fork ()) == 0)
     {
       sig_n (SIGTERM, _exit);
       mqtt_reset ();
       kb_lnk_reset (kb);
+      kb_lnk_reset (get_main_kb ());
       nvticache_reset ();
       srand48 (getpid () + getppid () + time (NULL));
       return 0;
@@ -876,6 +1120,8 @@ plug_fork_child (kb_t kb)
       return -1;
     }
   else
+    // the parent waits for the spawned process to finish to prevent DDOS on a
+    // host when multiple vhosts got spawned
     waitpid (pid, NULL, 0);
   return 1;
 }
@@ -943,9 +1189,9 @@ plug_get_key (struct script_infos *args, char *name, int *type, size_t *len,
   res_list = res;
   while (res)
     {
-      pid_t pid = plug_fork_child (kb);
+      int pret = plug_fork_child (kb);
 
-      if (pid == 0)
+      if (pret == 0)
         {
           /* Forked child. */
           void *ret;
@@ -969,12 +1215,12 @@ plug_get_key (struct script_infos *args, char *name, int *type, size_t *len,
           kb_item_free (res_list);
           return ret;
         }
-      else if (pid == -1)
+      else if (pret == -1)
         return NULL;
       res = res->next;
     }
   kb_item_free (res_list);
-  exit (0);
+  _exit (0);
 }
 
 /**

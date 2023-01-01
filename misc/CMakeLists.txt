@@ -76,6 +76,7 @@ set (CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -Werror")
 
 
 ## Pass-throughs
+add_definitions (-DOPENVAS_MISC_VERSION="${PROJECT_VERSION_STRING}")
 
 include_directories (${GLIB_INCLUDE_DIRS} ${GLIB_JSON_INCLUDE_DIRS}
                      ${LIBGVM_BASE_INCLUDE_DIRS}
@@ -84,34 +85,12 @@ include_directories (${GLIB_INCLUDE_DIRS} ${GLIB_JSON_INCLUDE_DIRS}
 # Library
 
 set (FILES bpf_share.c ftp_funcs.c vendorversion.c network.c plugutils.c pcap.c
-     strutils.c table_driven_lsc.c)
-
+     scan_id.c strutils.c table_driven_lsc.c ipc.c ipc_openvas.c ipc_pipe.c
+     user_agent.c scanneraux.c kb_cache.c)
 
 # On windows we are always PIC and stack-protector is replaces by DEP
 # Also stack protection needs a shared library to work
 set (CMAKE_C_FLAGS              "${CMAKE_C_FLAGS} -Wall -Wextra -fPIC")
-
-## Project version
-# The following three variables should be set through the project command once
-# we require CMake >= 3.0
-set (MISC_VERSION_MAJOR 21)
-set (MISC_VERSION_MINOR 10)
-set (MISC_VERSION_PATCH 0)
-
-if (PROJECT_BETA_RELEASE)
-  set (MISC_VERSION_SUFFIX "+beta${PROJECT_BETA_RELEASE}")
-else (PROJECT_BETA_RELEASE)
-  set (MISC_VERSION_SUFFIX ".${PROJECT_VERSION_PATCH}")
-endif (PROJECT_BETA_RELEASE)
-
-set (MISC_VERSION_STRING "${MISC_VERSION_MAJOR}.${MISC_VERSION_MINOR}${MISC_VERSION_SUFFIX}")
-if (PROJECT_BETA_RELEASE)
-  set (MISC_PACKAGE_VERSION "${MISC_VERSION_STRING}${PROJECT_VERSION_GIT}")
-else (PROJECT_BETA_RELEASE)
-  set (MISC_PACKAGE_VERSION "${MISC_VERSION_STRING}")
-endif (PROJECT_BETA_RELEASE)
-set (MISC_VERSION "${MISC_VERSION_STRING}")
-
 
 # Build shared
 
@@ -162,11 +141,18 @@ install (DIRECTORY
 
 enable_testing ()
 
+set (LINK_LIBS_FOR_TESTS cgreen
+                       ${LIBGVM_BASE_LDFLAGS}
+                       ${GLIB_LDFLAGS}
+                       ${PCAP_LDFLAGS}
+                       ${LINKER_HARDENING_FLAGS} ${CMAKE_THREAD_LIBS_INIT}
+                       ${ALIVEDETECTION_TEST_LINKER_WRAP_OPTIONS})
+
 set (ALIVEDETECTION_TEST_LINKER_WRAP_OPTIONS
-     "-Wl,-wrap,socket,-wrap,setsockopt")
-add_executable (pcap-test
-                EXCLUDE_FROM_ALL
-                pcap_tests.c)
+  "-Wl,-wrap,socket,-wrap,setsockopt")
+
+# pcap-tests
+add_executable (pcap-test EXCLUDE_FROM_ALL pcap_tests.c)
 add_test (pcap-test pcap-test)
 target_include_directories (pcap-test PRIVATE ${CGREEN_INCLUDE_DIRS})
 target_link_libraries (pcap-test cgreen
@@ -177,5 +163,17 @@ target_link_libraries (pcap-test cgreen
                        ${ALIVEDETECTION_TEST_LINKER_WRAP_OPTIONS})
 add_custom_target (tests-pcap
                   DEPENDS pcap-test)
+
+# ipc-openvas-tests
+add_executable (ipc-openvas-test EXCLUDE_FROM_ALL ipc_openvas_tests.c)
+add_test (ipc-openvas-test ipc-openvas-test)
+target_include_directories (ipc-openvas-test PRIVATE ${CGREEN_INCLUDE_DIRS})
+target_link_libraries (ipc-openvas-test cgreen
+                       ${GLIB_LDFLAGS}
+                       ${GLIB_JSON_LDFLAGS}
+                       ${LINKER_HARDENING_FLAGS})
+
+add_custom_target (tests-ipc-openvas
+                  DEPENDS ipc-openvas-test)
 
 ## End

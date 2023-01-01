@@ -23,8 +23,8 @@
  * @brief Header file for module plugutils.
  */
 
-#ifndef OPENVAS_PLUGUTILS_H
-#define OPENVAS_PLUGUTILS_H
+#ifndef MISC_PLUGUTILS_H
+#define MISC_PLUGUTILS_H
 
 #include "scanneraux.h" /* for struct script_infos */
 
@@ -146,6 +146,26 @@ host_get_port_state_udp (struct script_infos *, int);
 /*
  * Inter Plugins Communication functions
  */
+int check_kb_inconsistency (kb_t);
+
+int
+kb_item_push_str_with_main_kb_check (kb_t, const char *, const char *);
+
+int
+kb_item_set_str_with_main_kb_check (kb_t, const char *, const char *, size_t);
+
+int
+kb_item_add_str_unique_with_main_kb_check (kb_t, const char *, const char *,
+                                           size_t, int);
+
+int
+kb_item_set_int_with_main_kb_check (kb_t, const char *, int);
+
+int
+kb_item_add_int_with_main_kb_check (kb_t, const char *, int);
+
+int
+kb_item_add_int_unique_with_main_kb_check (kb_t, const char *, int);
 
 void
 plug_set_key (struct script_infos *, char *, int, const void *);
@@ -168,9 +188,6 @@ plug_replace_key_len (struct script_infos *, char *, int, void *, size_t);
 
 kb_t
 plug_get_kb (struct script_infos *);
-
-kb_t
-plug_get_results_kb (struct script_infos *);
 
 void *
 plug_get_key (struct script_infos *, char *, int *, size_t *, int);

@@ -35,7 +35,9 @@
 
 #include "openvas.h"
 
+#include "../misc/kb_cache.h"
 #include "../misc/plugutils.h"     /* nvticache_free */
+#include "../misc/scan_id.h"       /* to manage global scan_id */
 #include "../misc/vendorversion.h" /* for vendor_version_set */
 #include "attack.h"                /* for attack_network */
 #include "debug_utils.h"           /* for init_sentry */
@@ -103,7 +105,7 @@ int global_max_sysload = 0;
 GSList *log_config = NULL;
 
 static volatile int termination_signal = 0;
-static char *global_scan_id = NULL;
+// static char *global_scan_id = NULL;
 
 typedef struct
 {
@@ -179,6 +181,7 @@ static void
 handle_termination_signal (int sig)
 {
   termination_signal = sig;
+  procs_terminate_childs ();
 }
 
 /**
@@ -218,9 +221,13 @@ overwrite_openvas_prefs_with_prefs_from_client (struct scan_globals *globals)
     return -1;
 
   snprintf (key, sizeof (key), "internal/%s/scanprefs", globals->scan_id);
+
   kb = kb_find (prefs_get ("db_address"), key);
   if (!kb)
     return -1;
+  // 2022-10-19: currently internal/%s/scanprefs are set by ospd which is the
+  // main_kb in our context
+  set_main_kb (kb);
 
   res = kb_item_get_all (kb, key);
   if (!res)
@@ -260,8 +267,8 @@ overwrite_openvas_prefs_with_prefs_from_client (struct scan_globals *globals)
     }
   kb_del_items (kb, key);
   snprintf (key, sizeof (key), "internal/%s", globals->scan_id);
-  kb_item_set_str (kb, key, "ready", 0);
-  kb_item_set_int (kb, "internal/ovas_pid", getpid ());
+  kb_item_set_str_with_main_kb_check (kb, key, "ready", 0);
+  kb_item_set_int_with_main_kb_check (kb, "internal/ovas_pid", getpid ());
   kb_lnk_reset (kb);
 
   g_debug ("End loading scan preferences.");
@@ -351,37 +358,37 @@ openvas_print_start_msg ()
  * sends it the kill signal SIGUSR1, which will stop the scan.
  * To find the process ID, it uses the scan_id passed with the
  * --scan-stop option.
+ *
+ * @return 0 on success, 1 otherwise.
  */
-static void
+static int
 stop_single_task_scan (void)
 {
   char key[1024];
   kb_t kb;
   int pid;
 
-  if (!global_scan_id)
-    {
-      exit (1);
-    }
+  if (!get_scan_id ())
+    return 1;
 
-  snprintf (key, sizeof (key), "internal/%s", global_scan_id);
+  snprintf (key, sizeof (key), "internal/%s", get_scan_id ());
   kb = kb_find (prefs_get ("db_address"), key);
   if (!kb)
-    {
-      exit (1);
-    }
+    return 1;
 
   pid = kb_item_get_int (kb, "internal/ovas_pid");
 
   /* Only send the signal if the pid is a positive value.
      Since kb_item_get_int() will return -1 if the key does
-     not exist. killing with -1 pid will send the signal system wide.
+     not exist.
+     Warning: killing with -1 pid will send the signal system wide.
    */
   if (pid <= 0)
-    return;
+    return 1;
 
   /* Send the signal to the process group. */
   killpg (pid, SIGUSR1);
+  return 0;
 }
 
 /**
@@ -395,10 +402,11 @@ send_message_to_client_and_finish_scan (const char *msg)
   char key[1024];
   kb_t kb;
 
-  snprintf (key, sizeof (key), "internal/%s/scanprefs", global_scan_id);
+  // We get the main kb. It is still not set as global at this point.
+  snprintf (key, sizeof (key), "internal/%s/scanprefs", get_scan_id ());
   kb = kb_find (prefs_get ("db_address"), key);
   kb_item_push_str (kb, "internal/results", msg);
-  snprintf (key, sizeof (key), "internal/%s", global_scan_id);
+  snprintf (key, sizeof (key), "internal/%s", get_scan_id ());
   kb_item_set_str (kb, key, "finished", 0);
   kb_lnk_reset (kb);
 }
@@ -408,14 +416,17 @@ send_message_to_client_and_finish_scan (const char *msg)
  *
  * @param globals scan_globals needed for client preference handling.
  * @param config_file Used for config preference handling.
+ *
+ * @return 0 on success, 1 otherwise.
  */
-static void
+static int
 attack_network_init (struct scan_globals *globals, const gchar *config_file)
 {
   const char *mqtt_server_uri;
 
   set_default_openvas_prefs ();
   prefs_config (config_file);
+  set_globals_from_preferences ();
 
   if (prefs_get ("vendor_version") != NULL)
     vendor_version_set (prefs_get ("vendor_version"));
@@ -428,7 +439,7 @@ attack_network_init (struct scan_globals *globals, const gchar *config_file)
       send_message_to_client_and_finish_scan (
         "ERRMSG||| ||| ||| ||| |||NVTI cache initialization failed");
       nvticache_reset ();
-      exit (1);
+      return 1;
     }
   nvticache_reset ();
 
@@ -458,8 +469,10 @@ attack_network_init (struct scan_globals *globals, const gchar *config_file)
   if (overwrite_openvas_prefs_with_prefs_from_client (globals))
     {
       g_warning ("No preferences found for the scan %s", globals->scan_id);
-      exit (0);
+      return 1;
     }
+
+  return 0;
 }
 
 /**
@@ -510,7 +523,7 @@ openvas (int argc, char *argv[], char *env[])
   if (!g_option_context_parse (option_context, &argc, &argv, &error))
     {
       g_print ("%s\n\n", error->message);
-      exit (0);
+      return EXIT_SUCCESS;
     }
   g_option_context_free (option_context);
 
@@ -518,7 +531,7 @@ openvas (int argc, char *argv[], char *env[])
   if (print_sysconfdir)
     {
       g_print ("%s\n", SYSCONFDIR);
-      exit (0);
+      return EXIT_SUCCESS;
     }
 
   /* --version */
@@ -536,22 +549,21 @@ openvas (int argc, char *argv[], char *env[])
       printf (
         "This is free software: you are free to change and redistribute it.\n"
         "There is NO WARRANTY, to the extent permitted by law.\n\n");
-      exit (0);
+      return EXIT_SUCCESS;
     }
 
   /* Switch to UTC so that OTP times are always in UTC. */
   if (setenv ("TZ", "utc 0", 1) == -1)
     {
       g_print ("%s\n\n", strerror (errno));
-      exit (0);
+      return EXIT_SUCCESS;
     }
   tzset ();
 
-  if ((err = init_logging ()) != 0)
-    return -1;
+  if (init_logging () != 0)
+    return EXIT_FAILURE;
 
-  err = init_sentry ();
-  if (!err)
+  if (!init_sentry ())
     {
       g_message ("Sentry is enabled. This can log sensitive information.");
     }
@@ -568,7 +580,7 @@ openvas (int argc, char *argv[], char *env[])
       err = plugins_init ();
       nvticache_reset ();
       gvm_close_sentry ();
-      return err ? -1 : 0;
+      return err ? EXIT_FAILURE : EXIT_SUCCESS;
     }
 
   /* openvas --scan-stop */
@@ -582,29 +594,34 @@ openvas (int argc, char *argv[], char *env[])
                      "stop the scan");
           nvticache_reset ();
           gvm_close_sentry ();
-          exit (1);
+          return EXIT_FAILURE;
         }
       nvticache_reset ();
 
-      global_scan_id = g_strdup (stop_scan_id);
-      stop_single_task_scan ();
+      set_scan_id (g_strdup (stop_scan_id));
+      err = stop_single_task_scan ();
       gvm_close_sentry ();
-      exit (0);
+      return err ? EXIT_FAILURE : EXIT_SUCCESS;
     }
 
   /* openvas --scan-start */
   if (scan_id)
     {
       struct scan_globals *globals;
-      global_scan_id = g_strdup (scan_id);
+      set_scan_id (g_strdup (scan_id));
       globals = g_malloc0 (sizeof (struct scan_globals));
-      globals->scan_id = g_strdup (global_scan_id);
+      globals->scan_id = g_strdup (get_scan_id ());
 
-      attack_network_init (globals, config_file);
+      if (attack_network_init (globals, config_file) != 0)
+        {
+          destroy_scan_globals (globals);
+          return EXIT_FAILURE;
+        }
       attack_network (globals);
 
       gvm_close_sentry ();
-      exit (0);
+      destroy_scan_globals (globals);
+      return EXIT_SUCCESS;
     }
 
   if (print_specs)
@@ -613,8 +630,7 @@ openvas (int argc, char *argv[], char *env[])
       prefs_config (config_file);
       prefs_dump ();
       gvm_close_sentry ();
-      exit (0);
     }
 
-  exit (0);
+  return EXIT_SUCCESS;
 }

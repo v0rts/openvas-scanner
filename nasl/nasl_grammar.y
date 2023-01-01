@@ -37,6 +37,7 @@
 
 #include <glib.h>
 
+#include "../misc/plugutils.h"
 #include "nasl_tree.h"
 #include "nasl_global_ctxt.h"
 #include "nasl_func.h"
