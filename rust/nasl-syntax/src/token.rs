@@ -76,42 +76,44 @@ pub enum UnclosedCategory {
     String(StringCategory),
 }
 
-
 macro_rules! make_keyword_matcher {
     ($($matcher:ident : $define:expr),+) => {
 
-impl Keyword {
+impl IdentifierType {
     /// Creates a new keyword based on a string identifier
-    pub fn new(keyword: &str) -> Option<Self> {
+    pub fn new(keyword: &str) -> Self {
         match keyword {
            $(
-           stringify!($matcher) => Some($define),
+           stringify!($matcher) => $define,
            )*
-            _ => None
+            _ => Self::Undefined(keyword.to_owned())
         }
 
     }
 
 }
 
-impl ToString for Keyword {
+impl ToString for IdentifierType {
     fn to_string(&self) -> String {
-            $(
-                // cannot use match here because define is an expression
-        if self == &$define {
-           return stringify!($matcher).to_owned();
+        $(
+        // special case that is not defined via macro_call
+        if let IdentifierType::Undefined(r) = self {
+            return r.clone();
         }
-            )*
-                return "".to_owned();
-
+        // cannot use match here because define is an expression
+        if self == &$define {
+            return stringify!($matcher).to_owned();
+        }
+        )*
+        return "".to_owned();
     }
 }
     };
 }
 
-/// Are reserved words that cannot be reused otherwise.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Keyword {
+/// Unless Dynamic those are reserved words that cannot be reused otherwise.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IdentifierType {
     /// function declaration
     Function,
     /// _FCT_ANON_ARGS
@@ -148,48 +150,50 @@ pub enum Keyword {
     ACT(ACT),
     /// exit
     Exit,
+    /// Undefined
+    Undefined(String),
 }
 
-impl From<Token> for Range<usize> {
-    fn from(token: Token) -> Self {
+impl From<&Token> for Range<usize> {
+    fn from(token: &Token) -> Self {
         let (start, end) = token.position;
         Range { start, end }
     }
 }
 
 make_keyword_matcher! {
-    function: Keyword::Function,
-    _FCT_ANON_ARGS: Keyword::FCTAnonArgs,
-    TRUE: Keyword::True,
-    FALSE: Keyword::False,
-    for: Keyword::For,
-    foreach: Keyword::ForEach,
-    if: Keyword::If,
-    else: Keyword::Else,
-    while: Keyword::While,
-    repeat: Keyword::Repeat,
-    until: Keyword::Until,
-    local_var: Keyword::LocalVar,
-    global_var: Keyword::GlobalVar,
-    NULL: Keyword::Null,
-    return: Keyword::Return,
-    include: Keyword::Include,
-    exit: Keyword::Exit,
-    ACT_ATTACK: Keyword::ACT(ACT::Attack),
-    ACT_DENIAL: Keyword::ACT(ACT::Denial),
-    ACT_DESTRUCTIVE_ATTACK: Keyword::ACT(ACT::DestructiveAttack),
-    ACT_END: Keyword::ACT(ACT::End),
-    ACT_FLOOD: Keyword::ACT(ACT::Flood),
-    ACT_GATHER_INFO: Keyword::ACT(ACT::GatherInfo),
-    ACT_INIT: Keyword::ACT(ACT::Init),
-    ACT_KILL_HOST: Keyword::ACT(ACT::KillHost),
-    ACT_MIXED_ATTACK: Keyword::ACT(ACT::MixedAttack),
-    ACT_SCANNER: Keyword::ACT(ACT::Scanner),
-    ACT_SETTINGS: Keyword::ACT(ACT::Settings)
+    function: IdentifierType::Function,
+    _FCT_ANON_ARGS: IdentifierType::FCTAnonArgs,
+    TRUE: IdentifierType::True,
+    FALSE: IdentifierType::False,
+    for: IdentifierType::For,
+    foreach: IdentifierType::ForEach,
+    if: IdentifierType::If,
+    else: IdentifierType::Else,
+    while: IdentifierType::While,
+    repeat: IdentifierType::Repeat,
+    until: IdentifierType::Until,
+    local_var: IdentifierType::LocalVar,
+    global_var: IdentifierType::GlobalVar,
+    NULL: IdentifierType::Null,
+    return: IdentifierType::Return,
+    include: IdentifierType::Include,
+    exit: IdentifierType::Exit,
+    ACT_ATTACK: IdentifierType::ACT(ACT::Attack),
+    ACT_DENIAL: IdentifierType::ACT(ACT::Denial),
+    ACT_DESTRUCTIVE_ATTACK: IdentifierType::ACT(ACT::DestructiveAttack),
+    ACT_END: IdentifierType::ACT(ACT::End),
+    ACT_FLOOD: IdentifierType::ACT(ACT::Flood),
+    ACT_GATHER_INFO: IdentifierType::ACT(ACT::GatherInfo),
+    ACT_INIT: IdentifierType::ACT(ACT::Init),
+    ACT_KILL_HOST: IdentifierType::ACT(ACT::KillHost),
+    ACT_MIXED_ATTACK: IdentifierType::ACT(ACT::MixedAttack),
+    ACT_SCANNER: IdentifierType::ACT(ACT::Scanner),
+    ACT_SETTINGS: IdentifierType::ACT(ACT::Settings)
 }
 
 /// Is used to identify a Token
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Category {
     /// `(`
     LeftParen,
@@ -288,9 +292,9 @@ pub enum Category {
     /// `x` is a special functionality to redo a function call n times.E.g. `send_packet( udp, pcap_active:FALSE ) x 200;`
     X,
     /// A String can be either Quotable (') or Unquotable (") both can be multiline
-    String(StringCategory),
+    String(String),
     /// A Number can be either binary (0b), octal (0), base10 (1-9) or hex (0x)
-    Number(Base),
+    Number(i64),
     /// We currently just support 127.0.0.1 notation
     IPv4Address,
     /// Wrongfully identified as IpV4
@@ -300,7 +304,7 @@ pub enum Category {
     /// A comment starts with # and should be ignored
     Comment,
     /// Identifier are literals that are not strings and don't start with a number
-    Identifier(Option<Keyword>),
+    Identifier(IdentifierType),
     /// Unclosed token. This can happen on e.g. string literals
     Unclosed(UnclosedCategory),
     /// Number starts with an unidentifiable base
@@ -309,7 +313,7 @@ pub enum Category {
     UnknownSymbol,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// Contains the TokenType as well as the position in form of Range<usize>
 pub struct Token {
     /// The category or kind of a token
@@ -323,8 +327,8 @@ pub struct Token {
 
 impl Token {
     /// Returns the Category
-    pub fn category(&self) -> Category {
-        self.category
+    pub fn category(&self) -> &Category {
+        &self.category
     }
 
     /// Returns true when an Token is faulty
@@ -477,15 +481,70 @@ impl<'a> Tokenizer<'a> {
                 self.cursor.len_consumed()
             )
         } else {
-            let result = token!(
-                Category::String(string_category),
-                start,
-                self.cursor.len_consumed()
-            );
+            let result = {
+                let raw = &self.code[Range {
+                    start,
+                    end: self.cursor.len_consumed(),
+                }];
+                match string_category {
+                    StringCategory::Quotable => raw.to_owned(),
+                    StringCategory::Unquotable => {
+                        let mut string = raw.to_string();
+                        string = string.replace(r#"\n"#, "\n");
+                        string = string.replace(r#"\\"#, "\\");
+                        string = string.replace(r#"\""#, "\"");
+                        string = string.replace(r#"\'"#, "'");
+                        string = string.replace(r#"\r"#, "\r");
+                        string = string.replace(r#"\t"#, "\t");
+                        string
+                    }
+                }
+            };
+            let result = token!(Category::String(result), start, self.cursor.len_consumed());
             // skip "
             self.cursor.advance();
             result
         }
+    }
+    #[inline(always)]
+    fn may_parse_ipv4(&mut self, base: Base, start: usize) -> Option<Token> {
+        use Base::*;
+        // IPv4Address start as Base10
+        if base == Base10 && self.cursor.peek(0) == '.' && self.cursor.peek(1).is_numeric() {
+            self.cursor.advance();
+            self.cursor.skip_while(base.verifier());
+            // verify it may be an IPv4Address
+            // if the next one is a dot we are at
+            // 127.0
+            // and need to parse .0
+            if self.cursor.peek(0) == '.' {
+                if self.cursor.peek(1).is_numeric() {
+                    self.cursor.advance();
+                    self.cursor.skip_while(base.verifier());
+                } else {
+                    return token!(
+                        Category::IllegalIPv4Address,
+                        start,
+                        self.cursor.len_consumed()
+                    );
+                }
+
+                if self.cursor.peek(0) == '.' && self.cursor.peek(1).is_numeric() {
+                    self.cursor.advance();
+                    self.cursor.skip_while(base.verifier());
+                } else {
+                    return token!(
+                        Category::IllegalIPv4Address,
+                        start,
+                        self.cursor.len_consumed()
+                    );
+                }
+                return token!(Category::IPv4Address, start, self.cursor.len_consumed());
+            } else {
+                return token!(Category::IPv4Address, start, self.cursor.len_consumed());
+            }
+        }
+        None
     }
 
     // checks if a number is binary, octal, base10 or hex
@@ -523,47 +582,28 @@ impl<'a> Tokenizer<'a> {
         };
         if let Some(base) = may_base {
             self.cursor.skip_while(base.verifier());
-            // we only allow float numbers in base10
-            if base == Base10 && self.cursor.peek(0) == '.' && self.cursor.peek(1).is_numeric() {
-                self.cursor.advance();
-                self.cursor.skip_while(base.verifier());
-            }
-            // verify it may be an IPv4Address
-            // if the next one is a dot we are at
-            // 127.0
-            // and need to parse .0
-
-            if self.cursor.peek(0) == '.' {
-                if self.cursor.peek(1).is_numeric() {
-                    self.cursor.advance();
-                    self.cursor.skip_while(base.verifier());
-                } else {
-                    return token!(
-                        Category::IllegalIPv4Address,
-                        start,
-                        self.cursor.len_consumed()
-                    );
+            match self.may_parse_ipv4(base, start) {
+                Some(token) => Some(token),
+                None => {
+                    // we verify that the cursor actually moved to prevent scenarios like
+                    // 0b without any actual number in it
+                    if start == self.cursor.len_consumed() {
+                        token!(Category::IllegalNumber(base), start, start)
+                    } else {
+                        match i64::from_str_radix(
+                            &self.code[Range {
+                                start,
+                                end: self.cursor.len_consumed(),
+                            }],
+                            base.radix(),
+                        ) {
+                            Ok(num) => {
+                                token!(Category::Number(num), start, self.cursor.len_consumed())
+                            }
+                            Err(_) => token!(Category::IllegalNumber(base), start, start),
+                        }
+                    }
                 }
-
-                if self.cursor.peek(0) == '.' && self.cursor.peek(1).is_numeric() {
-                    self.cursor.advance();
-                    self.cursor.skip_while(base.verifier());
-                } else {
-                    return token!(
-                        Category::IllegalIPv4Address,
-                        start,
-                        self.cursor.len_consumed()
-                    );
-                }
-                return token!(Category::IPv4Address, start, self.cursor.len_consumed());
-            }
-
-            // we verify that the cursor actually moved to prevent scenarios like
-            // 0b without any actual number in it
-            if start == self.cursor.len_consumed() {
-                token!(Category::IllegalNumber(base), start, start)
-            } else {
-                token!(Category::Number(base), start, self.cursor.len_consumed())
             }
         } else {
             token!(Category::UnknownBase, start, self.cursor.len_consumed())
@@ -579,14 +619,14 @@ impl<'a> Tokenizer<'a> {
         let lookup = self.lookup(Range { start, end });
         let cat = {
             if lookup != "x" {
-                let keyword = Keyword::new(lookup);
+                let keyword = IdentifierType::new(lookup);
                 Category::Identifier(keyword)
             } else {
                 self.cursor.skip_while(|c| c.is_whitespace());
                 if self.cursor.peek(0).is_numeric() {
                     Category::X
                 } else {
-                    Category::Identifier(None)
+                    Category::Identifier(IdentifierType::Undefined(lookup.to_owned()))
                 }
             }
         };
@@ -685,7 +725,7 @@ mod tests {
         ($code:expr, $expected:expr) => {{
             let tokenizer = Tokenizer::new($code);
             let actual: Vec<Token> = tokenizer.clone().collect();
-            let expected: Vec<Token> = $expected.iter().map(|x| build_token(*x)).collect();
+            let expected: Vec<Token> = $expected.iter().map(|x| build_token(x.clone())).collect();
             assert_eq!(actual, expected);
             (tokenizer, actual)
         }};
@@ -767,10 +807,16 @@ mod tests {
     fn unquotable_string() {
         use StringCategory::*;
         let code = "\"hello I am a closed string\\\"";
-        let (tokenizer, result) =
-            verify_tokens!(code, vec![(Category::String(Unquotable), 1, 28)]);
+        let (tokenizer, result) = verify_tokens!(
+            code,
+            vec![(
+                Category::String("hello I am a closed string\\".to_owned()),
+                1,
+                28
+            )]
+        );
         assert_eq!(
-            tokenizer.lookup(Range::from(result[0])),
+            tokenizer.lookup(Range::from(&result[0])),
             "hello I am a closed string\\"
         );
         let code = "\"hello I am a unclosed string\\";
@@ -788,9 +834,10 @@ mod tests {
     fn quotable_string() {
         use StringCategory::*;
         let code = "'Hello \\'you\\'!'";
-        let (tokenizer, result) = verify_tokens!(code, vec![(Category::String(Quotable), 1, 15)]);
-        assert_eq!(tokenizer.lookup(Range::from(result[0])), "Hello \\'you\\'!");
-
+        verify_tokens!(
+            code,
+            vec![(Category::String("Hello \\'you\\'!".to_owned()), 1, 15)]
+        );
         let code = "'Hello \\'you\\'!\\'";
         verify_tokens!(
             code,
@@ -806,18 +853,22 @@ mod tests {
     fn numbers() {
         use Base::*;
         use Category::*;
-        verify_tokens!("0", vec![(Number(Base10), 0, 1)]);
-        verify_tokens!("0b01", vec![(Number(Binary), 2, 4)]);
-        verify_tokens!("1234567890", vec![(Number(Base10), 0, 10)]);
-        verify_tokens!("0.123456789", vec![(Number(Base10), 0, 11)]);
-        verify_tokens!("012345670", vec![(Number(Octal), 1, 9)]);
-        verify_tokens!("0x1234567890ABCDEF", vec![(Number(Hex), 2, 18)]);
+        verify_tokens!("0", vec![(Number(0), 0, 1)]);
+        verify_tokens!("0b01", vec![(Number(1), 2, 4)]);
+        verify_tokens!("1234567890", vec![(Number(1234567890), 0, 10)]);
+        // TODO remove float
+        //verify_tokens!("0.123456789", vec![(Number(Base10), 0, 11)]);
+        verify_tokens!("012345670", vec![(Number(2739128), 1, 9)]);
+        verify_tokens!(
+            "0x1234567890ABCDEF",
+            vec![(Number(1311768467294899695), 2, 18)]
+        );
         // That would be later illegal because a number if followed by a number
         // but within tokenizing I think it is the best to ignore that and let it be handled by AST
-        verify_tokens!("0b02", vec![(Number(Binary), 2, 3), (Number(Base10), 3, 4)]);
+        verify_tokens!("0b02", vec![(Number(0), 2, 3), (Number(2), 3, 4)]);
         verify_tokens!(
             "0b2",
-            vec![(IllegalNumber(Binary), 2, 2), (Number(Base10), 2, 3)]
+            vec![(IllegalNumber(Binary), 2, 2), (Number(2), 2, 3)]
         );
     }
 
@@ -833,41 +884,53 @@ mod tests {
     #[test]
     fn identifier() {
         use Category::*;
-        verify_tokens!("hel_lo", vec![(Identifier(None), 0, 6)]);
-        verify_tokens!("_hello", vec![(Identifier(None), 0, 6)]);
-        verify_tokens!("_h4llo", vec![(Identifier(None), 0, 6)]);
+        use IdentifierType::*;
+        verify_tokens!(
+            "hel_lo",
+            vec![(Identifier(Undefined("hel_lo".to_owned())), 0, 6)]
+        );
+        verify_tokens!(
+            "_hello",
+            vec![(Identifier(Undefined("_hello".to_owned())), 0, 6)]
+        );
+        verify_tokens!(
+            "_h4llo",
+            vec![(Identifier(Undefined("_h4llo".to_owned())), 0, 6)]
+        );
         verify_tokens!(
             "4_h4llo",
-            vec![(Number(Base::Base10), 0, 1), (Identifier(None), 1, 7)]
+            vec![
+                (Number(4), 0, 1),
+                (Identifier(Undefined("_h4llo".to_owned())), 1, 7)
+            ]
         );
     }
 
     #[test]
     fn keywords() {
         use Category::*;
-        use Keyword::*;
-        verify_tokens!("for", vec![(Identifier(Some(For)), 0, 3)]);
-        verify_tokens!("foreach", vec![(Identifier(Some(ForEach)), 0, 7)]);
-        verify_tokens!("if", vec![(Identifier(Some(If)), 0, 2)]);
-        verify_tokens!("else", vec![(Identifier(Some(Else)), 0, 4)]);
-        verify_tokens!("while", vec![(Identifier(Some(While)), 0, 5)]);
-        verify_tokens!("repeat", vec![(Identifier(Some(Repeat)), 0, 6)]);
-        verify_tokens!("until", vec![(Identifier(Some(Until)), 0, 5)]);
-        verify_tokens!("local_var", vec![(Identifier(Some(LocalVar)), 0, 9)]);
-        verify_tokens!("global_var", vec![(Identifier(Some(GlobalVar)), 0, 10)]);
-        verify_tokens!("NULL", vec![(Identifier(Some(Null)), 0, 4)]);
-        verify_tokens!("return", vec![(Identifier(Some(Return)), 0, 6)]);
-        verify_tokens!("include", vec![(Identifier(Some(Include)), 0, 7)]);
-        verify_tokens!("exit", vec![(Identifier(Some(Exit)), 0, 4)]);
+        use IdentifierType::*;
+        verify_tokens!("for", vec![(Identifier(For), 0, 3)]);
+        verify_tokens!("foreach", vec![(Identifier(ForEach), 0, 7)]);
+        verify_tokens!("if", vec![(Identifier(If), 0, 2)]);
+        verify_tokens!("else", vec![(Identifier(Else), 0, 4)]);
+        verify_tokens!("while", vec![(Identifier(While), 0, 5)]);
+        verify_tokens!("repeat", vec![(Identifier(Repeat), 0, 6)]);
+        verify_tokens!("until", vec![(Identifier(Until), 0, 5)]);
+        verify_tokens!("local_var", vec![(Identifier(LocalVar), 0, 9)]);
+        verify_tokens!("global_var", vec![(Identifier(GlobalVar), 0, 10)]);
+        verify_tokens!("NULL", vec![(Identifier(Null), 0, 4)]);
+        verify_tokens!("return", vec![(Identifier(Return), 0, 6)]);
+        verify_tokens!("include", vec![(Identifier(Include), 0, 7)]);
+        verify_tokens!("exit", vec![(Identifier(Exit), 0, 4)]);
     }
 
     #[test]
     fn string_quoting() {
         use Category::*;
-        use StringCategory::*;
         verify_tokens!(
             r###"'webapps\\appliance\\'"###,
-            vec![(String(Quotable), 1, 21)]
+            vec![(String("webapps\\\\appliance\\\\".to_owned()), 1, 21)]
         );
     }
 
@@ -883,11 +946,11 @@ mod tests {
         verify_tokens!(
             "x() x 10;",
             vec![
-                (Identifier(None), 0, 1),
+                (Identifier(IdentifierType::Undefined("x".to_owned())), 0, 1),
                 (LeftParen, 1, 2),
                 (RightParen, 2, 3),
                 (X, 4, 5),
-                (Number(Base::Base10), 6, 8),
+                (Number(10), 6, 8),
                 (Semicolon, 8, 9),
             ]
         );
@@ -895,10 +958,8 @@ mod tests {
 
     #[test]
     fn tokenize_description_block() {
-        use Base::*;
         use Category::*;
-        use Keyword::*;
-        use StringCategory::*;
+        use IdentifierType::*;
 
         let code = r#"
 if(description)
@@ -915,40 +976,40 @@ exit(1);
         verify_tokens!(
             code,
             vec![
-                (Identifier(Some(If)), 1, 3),
-                (LeftParen, 3, 4),                    // start expression block
-                (Identifier(None), 4, 15),            // verify is description is true
-                (RightParen, 15, 16),                 // end expression block
-                (LeftCurlyBracket, 17, 18),           // start execution block
-                (Identifier(None), 21, 31),           // lookup function script_oid
-                (LeftParen, 31, 32),                  // start parameter expression block
-                (String(Unquotable), 33, 60), // resolve prime to "1.3.6.1.4.1.25623.1.0.99999"
-                (RightParen, 61, 62),          // end expression block
-                (Semicolon, 62, 63),           // finish execution
-                (Identifier(Some(Exit)), 66, 70), // lookup keyword exit
-                (LeftParen, 70, 71),           // start parameter expression block
-                (Number(Base10), 71, 72),      // call exit with 0
-                (RightParen, 72, 73),          // end expression block
-                (Semicolon, 73, 74),           // finish execution
-                (RightCurlyBracket, 75, 76),   // finish expression block
-                (Identifier(None), 78, 79),    // lookup j
-                (Equal, 80, 81),               // assign to j
-                (Number(Base10), 82, 85),      // number 123
-                (Semicolon, 85, 86),           // finish execution
-                (Identifier(None), 87, 88),    // lookup j
+                (Identifier(If), 1, 3),
+                (LeftParen, 3, 4), // start expression block
+                (Identifier(Undefined("description".to_owned())), 4, 15), // verify is description is true
+                (RightParen, 15, 16),                                     // end expression block
+                (LeftCurlyBracket, 17, 18),                               // start execution block
+                (Identifier(Undefined("script_oid".to_owned())), 21, 31), // lookup function script_oid
+                (LeftParen, 31, 32), // start parameter expression block
+                (String("1.3.6.1.4.1.25623.1.0.99999".to_owned()), 33, 60), // resolve prime to "1.3.6.1.4.1.25623.1.0.99999"
+                (RightParen, 61, 62),                                       // end expression block
+                (Semicolon, 62, 63),                                        // finish execution
+                (Identifier(Exit), 66, 70),                                 // lookup keyword exit
+                (LeftParen, 70, 71),         // start parameter expression block
+                (Number(0), 71, 72),         // call exit with 0
+                (RightParen, 72, 73),        // end expression block
+                (Semicolon, 73, 74),         // finish execution
+                (RightCurlyBracket, 75, 76), // finish expression block
+                (Identifier(Undefined("j".to_owned())), 78, 79), // lookup j
+                (Equal, 80, 81),             // assign to j
+                (Number(123), 82, 85),       // number 123
+                (Semicolon, 85, 86),         // finish execution
+                (Identifier(Undefined("j".to_owned())), 87, 88), // lookup j
                 (GreaterGreaterGreaterEqual, 89, 93), // shift j and assign to j
-                (Number(Base10), 94, 95),      // 8
-                (Semicolon, 95, 96),           // finish execution
-                (Identifier(None), 97, 104),   // lookup display
-                (LeftParen, 104, 105),         // start parameter expression block
-                (Identifier(None), 105, 106),  // resolve j primitive
-                (RightParen, 106, 107),        // finish parameter expression block
-                (Semicolon, 107, 108),         // finish execution
-                (Identifier(Some(Exit)), 109, 113), // lookup keyword exit
-                (LeftParen, 113, 114),         // start parameter expression block
-                (Number(Base10), 114, 115),    // call exit with 1
-                (RightParen, 115, 116),        // finish parameter expression block
-                (Semicolon, 116, 117)          // finish execution
+                (Number(8), 94, 95),         // 8
+                (Semicolon, 95, 96),         // finish execution
+                (Identifier(Undefined("display".to_owned())), 97, 104), // lookup display
+                (LeftParen, 104, 105),       // start parameter expression block
+                (Identifier(Undefined("j".to_owned())), 105, 106), // resolve j primitive
+                (RightParen, 106, 107),      // finish parameter expression block
+                (Semicolon, 107, 108),       // finish execution
+                (Identifier(Exit), 109, 113), // lookup keyword exit
+                (LeftParen, 113, 114),       // start parameter expression block
+                (Number(1), 114, 115),       // call exit with 1
+                (RightParen, 115, 116),      // finish parameter expression block
+                (Semicolon, 116, 117)        // finish execution
             ]
         );
     }

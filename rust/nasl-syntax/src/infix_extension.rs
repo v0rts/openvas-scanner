@@ -19,7 +19,7 @@ pub(crate) trait Infix {
         op: Operation,
         token: Token,
         lhs: Statement,
-        abort: &impl Fn(Category) -> bool,
+        abort: &impl Fn(&Category) -> bool,
     ) -> Result<(End, Statement), SyntaxError>;
 }
 
@@ -61,12 +61,12 @@ impl<'a> Infix for Lexer<'a> {
         op: Operation,
         token: Token,
         lhs: Statement,
-        abort: &impl Fn(Category) -> bool,
+        abort: &impl Fn(&Category) -> bool,
     ) -> Result<(End, Statement), SyntaxError> {
         Ok({
             // binding power of the right side
             let (_, right_bp) =
-                infix_binding_power(op).expect("handle_infix should be called first");
+                infix_binding_power(op.clone()).expect("handle_infix should be called first");
             let (end, rhs) = self.statement(right_bp, abort)?;
             let stmt = match op {
                 // DoublePoint operation needs to be changed to NamedParameter statement
@@ -97,11 +97,11 @@ impl<'a> Infix for Lexer<'a> {
                 },
                 // Assign needs to be translated due handle the return cases for e.g. ( a = 1) * 2
                 Operation::Assign(category) => match lhs {
-                    Statement::Variable(var) => {
+                    Statement::Variable(ref var) => {
                         // when the right side is a parameter list than it is an array
                         let lhs = {
                             match rhs {
-                                Statement::Parameter(_) => Statement::Array(var, None),
+                                Statement::Parameter(_) => Statement::Array(var.clone(), None),
                                 _ => lhs,
                             }
                         };
@@ -118,9 +118,9 @@ impl<'a> Infix for Lexer<'a> {
                         Box::new(lhs),
                         Box::new(rhs),
                     ),
-                    _ => Statement::Operator(token.category(), vec![lhs, rhs]),
+                    _ => Statement::Operator(token.category().clone(), vec![lhs, rhs]),
                 },
-                _ => Statement::Operator(token.category(), vec![lhs, rhs]),
+                _ => Statement::Operator(token.category().clone(), vec![lhs, rhs]),
             };
             (end, stmt)
         })
@@ -159,12 +159,12 @@ mod test {
     use std::ops::Range;
 
     use super::*;
-    use crate::token::Base;
-    use crate::token::Base::*;
+    
+    
     use crate::token::Category::*;
-    use crate::token::StringCategory;
     use crate::token::Token;
     use Statement::*;
+    use crate::IdentifierType::Undefined;
 
     // simplified resolve method to verify a calculate with a given statement
     fn resolve(code: &str, s: Statement) -> i64 {
@@ -180,7 +180,7 @@ mod test {
             };
         match s {
             Primitive(token) => match token.category() {
-                Number(_) => code[Range::from(token)].parse().unwrap(),
+                Number(_) => code[Range::from(&token)].parse().unwrap(),
                 String(_) => todo!(),
                 _ => todo!(),
             },
@@ -276,8 +276,8 @@ mod test {
             Assign(
                 category,
                 AssignOrder::AssignReturn,
-                Box::new(Variable(token(Identifier(None), 0, 1))),
-                Box::new(Primitive(token(Number(Base10), 5 + shift, 6 + shift))),
+                Box::new(Variable(token(Identifier(Undefined("a".to_owned())), 0, 1))),
+                Box::new(Primitive(token(Number(1), 5 + shift, 6 + shift))),
             )
         }
         assert_eq!(result("a += 1;"), expected(PlusEqual, 0));
@@ -299,11 +299,11 @@ mod test {
                 category,
                 vec![
                     Variable(Token {
-                        category: Identifier(None),
+                        category: Identifier(Undefined("a".to_owned())),
                         position: (0, 1),
                     }),
                     Primitive(Token {
-                        category: String(StringCategory::Quotable),
+                        category: String("1".to_owned()),
                         position: ((6 + shift) as usize, (7 + shift) as usize),
                     }),
                 ],
@@ -328,11 +328,11 @@ mod test {
                 category,
                 vec![
                     Variable(Token {
-                        category: Identifier(None),
+                        category: Identifier(Undefined("a".to_owned())),
                         position: (0, 1),
                     }),
                     Primitive(Token {
-                        category: Number(Base::Base10),
+                        category: Number(1),
                         position: (5 + shift, 6 + shift),
                     }),
                 ],
@@ -349,9 +349,9 @@ mod test {
             Assign(
                 Category::Equal,
                 AssignOrder::AssignReturn,
-                Box::new(Variable(token(Identifier(None), 0, 1))),
+                Box::new(Variable(token(Identifier(Undefined("a".to_owned())), 0, 1))),
                 Box::new(Primitive(Token {
-                    category: Number(Base10),
+                    category: Number(1),
                     position: (4, 5)
                 }))
             )
@@ -361,9 +361,9 @@ mod test {
             Assign(
                 Category::Equal,
                 AssignOrder::AssignReturn,
-                Box::new(Variable(token(Identifier(None), 1, 2))),
+                Box::new(Variable(token(Identifier(Undefined("a".to_owned())), 1, 2))),
                 Box::new(Primitive(Token {
-                    category: Number(Base10),
+                    category: Number(1),
                     position: (5, 6)
                 }))
             )
@@ -379,13 +379,13 @@ mod test {
                 vec![
                     Call(
                         Token {
-                            category: Identifier(None),
+                            category: Identifier(Undefined("x".to_owned())),
                             position: (0, 1)
                         },
                         Box::new(Parameter(vec![]))
                     ),
                     Primitive(Token {
-                        category: Number(Base10),
+                        category: Number(2),
                         position: (6, 7)
                     })
                 ]

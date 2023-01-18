@@ -27,7 +27,7 @@ impl<'a> Lexer<'a> {
 
 impl<'a> Grouping for Lexer<'a> {
     fn parse_paren(&mut self, token: Token) -> Result<Statement, SyntaxError> {
-        let (end, right) = self.statement(0, &|cat| cat == Category::RightParen)?;
+        let (end, right) = self.statement(0, &|cat| cat == &Category::RightParen)?;
         if !end {
             Err(unclosed_token!(token))
         } else {
@@ -46,11 +46,11 @@ impl<'a> Grouping for Lexer<'a> {
     fn parse_block(&mut self, token: Token) -> Result<Statement, SyntaxError> {
         let mut results = vec![];
         while let Some(token) = self.peek() {
-            if token.category() == Category::RightCurlyBracket {
+            if token.category() == &Category::RightCurlyBracket {
                 self.token();
                 return Ok(Statement::Block(results));
             }
-            let (end, stmt) = self.statement(0, &|cat| cat == Category::Semicolon)?;
+            let (end, stmt) = self.statement(0, &|cat| cat == &Category::Semicolon)?;
             if end.is_done() && !matches!(stmt, Statement::NoOp(_)) {
                 results.push(stmt);
             }
@@ -65,10 +65,10 @@ impl<'a> Grouping for Lexer<'a> {
                 .map(|stmt| (End::Continue, stmt)),
             Category::LeftCurlyBracket => self
                 .parse_block(token)
-                .map(|stmt| (End::Done(token.category()), stmt)),
+                .map(|stmt| (End::Done(Category::LeftCurlyBracket), stmt)),
             Category::LeftBrace => self
                 .parse_brace(token)
-                .map(|stmt| (End::Done(token.category()), stmt)),
+                .map(|stmt| (End::Done(Category::LeftBrace), stmt)),
             _ => Err(unexpected_token!(token)),
         }
     }
@@ -79,12 +79,12 @@ mod test {
     use crate::{
         {AssignOrder, Statement},
         parse,
-        token::{Base, Category, Token},
+        token::{Category, Token},
     };
 
-    use Base::*;
     use Category::*;
     use Statement::*;
+    use crate::IdentifierType::Undefined;
 
     fn result(code: &str) -> Statement {
         parse(code).next().unwrap().unwrap()
@@ -109,18 +109,18 @@ mod test {
                     Equal,
                     AssignOrder::AssignReturn,
                     Box::new(Variable(Token {
-                        category: Identifier(None),
+                        category: Identifier(Undefined("a".to_owned())),
                         position: (31, 32)
                     })),
                     Box::new(Operator(
                         Plus,
                         vec![
                             Variable(Token {
-                                category: Identifier(None),
+                                category: Identifier(Undefined("b".to_owned())),
                                 position: (35, 36)
                             }),
                             Primitive(Token {
-                                category: Number(Base10),
+                                category: Number(1),
                                 position: (39, 40)
                             })
                         ]
@@ -130,21 +130,21 @@ mod test {
                     Equal,
                     AssignOrder::AssignReturn,
                     Box::new(Variable(Token {
-                        category: Identifier(None),
+                        category: Identifier(Undefined("b".to_owned())),
                         position: (58, 59)
                     },)),
                     Box::new(Operator(
                         Minus,
                         vec![
                             Variable(Token {
-                                category: Identifier(None),
+                                category: Identifier(Undefined("a".to_owned())),
                                 position: (62, 63)
                             }),
                             Assign(
                                 MinusMinus,
                                 AssignOrder::AssignReturn,
                                 Box::new(Variable(Token {
-                                    category: Identifier(None),
+                                    category: Identifier(Undefined("c".to_owned())),
                                     position: (68, 69)
                                 },)),
                                 Box::new(NoOp(None))
@@ -156,11 +156,11 @@ mod test {
                     Equal,
                     AssignOrder::AssignReturn,
                     Box::new(Variable(Token {
-                        category: Identifier(None),
+                        category: Identifier(Undefined("d".to_owned())),
                         position: (108, 109)
                     },)),
                     Box::new(Primitive(Token {
-                        category: Number(Base10),
+                        category: Number(23),
                         position: (112, 114)
                     }))
                 )])

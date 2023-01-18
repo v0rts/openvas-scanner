@@ -17,7 +17,7 @@ pub(crate) trait Prefix {
     fn prefix_statement(
         &mut self,
         token: Token,
-        abort: &impl Fn(Category) -> bool,
+        abort: &impl Fn(&Category) -> bool,
     ) -> Result<(End, Statement), SyntaxError>;
 }
 
@@ -62,10 +62,10 @@ impl<'a> Prefix for Lexer<'a> {
     fn prefix_statement(
         &mut self,
         token: Token,
-        abort: &impl Fn(Category) -> bool,
+        abort: &impl Fn(&Category) -> bool,
     ) -> Result<(End, Statement), SyntaxError> {
         use End::*;
-        let op = Operation::new(token).ok_or_else(|| unexpected_token!(token))?;
+        let op = Operation::new(token.clone()).ok_or_else(|| unexpected_token!(token.clone()))?;
         match op {
             Operation::Operator(kind) => {
                 let bp = prefix_binding_power(token)?;
@@ -83,7 +83,7 @@ impl<'a> Prefix for Lexer<'a> {
                 .map(|stmt| (Continue, stmt)),
             Operation::Assign(_) => Err(unexpected_token!(token)),
             Operation::Keyword(keyword) => self.parse_keyword(keyword, token),
-            Operation::NoOp => Ok((Done(token.category()), Statement::NoOp(Some(token)))),
+            Operation::NoOp => Ok((Done(token.category().clone()), Statement::NoOp(Some(token)))),
         }
     }
 }
@@ -95,12 +95,12 @@ mod test {
         AssignOrder,
         Statement,
         parse,
-        token::{Base, Category, StringCategory, Token},
+        token::{Category, Token},
     };
 
-    use Base::*;
     use Category::*;
     use Statement::*;
+    use crate::IdentifierType::Undefined;
 
     fn result(code: &str) -> Statement {
         parse(code).next().unwrap().unwrap()
@@ -117,7 +117,7 @@ mod test {
         fn expected(category: Category) -> Statement {
             Statement::Operator(
                 category,
-                vec![Statement::Primitive(token(Number(Base10), 1, 2))],
+                vec![Statement::Primitive(token(Number(1), 1, 2))],
             )
         }
 
@@ -129,10 +129,10 @@ mod test {
 
     #[test]
     fn single_statement() {
-        assert_eq!(result("1;"), Primitive(token(Number(Base10), 0, 1)));
+        assert_eq!(result("1;"), Primitive(token(Number(1), 0, 1)));
         assert_eq!(
             result("'a';"),
-            Primitive(token(String(StringCategory::Quotable), 1, 2))
+            Primitive(token(String("a".to_owned()), 1, 2))
         );
     }
 
@@ -143,7 +143,7 @@ mod test {
                 Plus,
                 vec![
                     Primitive(Token {
-                        category: Number(Base10),
+                        category: Number(1),
                         position: (0, 1),
                     }),
                     Operator(
@@ -153,13 +153,13 @@ mod test {
                                 assign_operator,
                                 AssignOrder::AssignReturn,
                                 Box::new(Variable(Token {
-                                    category: Identifier(None),
+                                    category: Identifier(Undefined("a".to_owned())),
                                     position: (6, 7),
                                 })),
                                 Box::new(NoOp(None)),
                             ),
                             Primitive(Token {
-                                category: Number(Base10),
+                                category: Number(1),
                                 position: (10, 11),
                             }),
                         ],
@@ -179,11 +179,11 @@ mod test {
                 AssignReturn,
                 Box::new(Array(
                     Token {
-                        category: Identifier(None),
+                        category: Identifier(Undefined("a".to_owned())),
                         position: (2, 3),
                     },
                     Some(Box::new(Primitive(Token {
-                        category: Number(Base10),
+                        category: Number(0),
                         position: (4, 5),
                     }))),
                 )),

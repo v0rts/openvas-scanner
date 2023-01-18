@@ -84,12 +84,13 @@ impl<'a> Postfix for Lexer<'a> {
 mod test {
     use crate::{
         parse,
-        token::{Base, Category, Token}, Statement, AssignOrder,
+        token::{Category, Token}, Statement, AssignOrder,
     };
 
-    use Base::*;
+    
     use Category::*;
     use crate::Statement::*;
+    use crate::IdentifierType::Undefined;
 
     fn result(code: &str) -> Statement {
         parse(code).next().unwrap().unwrap()
@@ -102,7 +103,7 @@ mod test {
                 Plus,
                 vec![
                     Primitive(Token {
-                        category: Number(Base10),
+                        category: Number(1),
                         position: (0, 1),
                     }),
                     Operator(
@@ -112,13 +113,13 @@ mod test {
                                 assign_operator,
                                 AssignOrder::ReturnAssign,
                                 Box::new(Variable(Token {
-                                    category: Identifier(None),
+                                    category: Identifier(Undefined("a".to_owned())),
                                     position: (4, 5),
                                 })),
                                 Box::new(NoOp(None)),
                             ),
                             Primitive(Token {
-                                category: Number(Base10),
+                                category: Number(1),
                                 position: (10, 11),
                             }),
                         ],
@@ -139,11 +140,11 @@ mod test {
                 ReturnAssign,
                 Box::new(Array(
                     Token {
-                        category: Identifier(None),
+                        category: Identifier(Undefined("a".to_owned())),
                         position: (0, 1),
                     },
                     Some(Box::new(Primitive(Token {
-                        category: Number(Base10),
+                        category: Number(1),
                         position: (2, 3),
                     }))),
                 )),

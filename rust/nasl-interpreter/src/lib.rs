@@ -3,9 +3,12 @@ use context::Register;
 use error::{FunctionError, InterpretError};
 
 mod built_in_functions;
+mod call;
+mod assign;
 mod context;
 pub mod error;
 mod interpreter;
+mod operator;
 
 pub use context::ContextType;
 pub use interpreter::{Interpreter, NaslValue};
@@ -37,9 +40,9 @@ pub fn interpret<'a>(
     storage: &dyn Sink,
     mode: Mode,
     code: &'a str,
-) -> Vec<Result<NaslValue, InterpretError>> {
+) -> Result<NaslValue, InterpretError> {
     let mut interpreter = match mode {
-        Mode::Normal(oid) => Interpreter::new(storage, vec![], Some(oid), None, code),
+        Mode::Normal(oid) => Interpreter::new(storage, vec![], Some(oid), None),
         Mode::Description(filename) => {
             let initial = vec![(
                 "description".to_owned(),
@@ -49,23 +52,26 @@ pub fn interpret<'a>(
                 filename,
                 sink::Dispatch::NVT(sink::nvt::NVTField::FileName(filename.to_owned())),
             ) {
-                return vec![Err(InterpretError::from(err))];
+                return Err(InterpretError::from(err));
             }
-            Interpreter::new(storage, initial, None, Some(filename), code)
+            Interpreter::new(storage, initial, None, Some(filename))
         }
     };
 
-    let mut result = parse(code)
+    let result = parse(code)
         .map(|stmt| match stmt {
             Ok(stmt) => interpreter.resolve(stmt),
             Err(r) => Err(InterpretError::from(r)),
         })
-        .collect();
+        .last()
+        // for the case of NaslValue that returns nothing
+        .unwrap_or(Ok(NaslValue::Exit(0)));
+    let result = result.map(|x| match x {
+        NaslValue::Exit(rc) => NaslValue::Exit(rc),
+        _ => NaslValue::Exit(0),
+    });
     match storage.on_exit() {
         Ok(_) => result,
-        Err(err) => {
-            result.push(Err(InterpretError::from(err)));
-            result
-        }
+        Err(err) => Err(InterpretError::from(err)),
     }
 }

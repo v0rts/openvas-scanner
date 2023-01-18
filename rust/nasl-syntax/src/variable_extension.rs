@@ -26,12 +26,12 @@ impl<'a> CommaGroup for Lexer<'a> {
         let mut params = vec![];
         let mut end = End::Continue;
         while let Some(token) = self.peek() {
-            if token.category() == category {
+            if *token.category() == category {
                 self.token();
                 end = End::Done(category);
                 break;
             }
-            let (stmtend, param) = self.statement(0, &|c| c == category || c == Category::Comma)?;
+            let (stmtend, param) = self.statement(0, &|c| c == &category || c == &Category::Comma)?;
             match param {
                 Statement::Parameter(nparams) => params.extend_from_slice(&nparams),
                 param => params.push(param),
@@ -52,7 +52,7 @@ impl<'a> CommaGroup for Lexer<'a> {
 
 impl<'a> Variables for Lexer<'a> {
     fn parse_variable(&mut self, token: Token) -> Result<(End, Statement), SyntaxError> {
-        if token.category() != Category::Identifier(None) {
+        if !matches!(token.category(), Category::Identifier(crate::IdentifierType::Undefined(_))) {
             return Err(unexpected_token!(token));
         }
         use End::*;
@@ -72,7 +72,7 @@ impl<'a> Variables for Lexer<'a> {
                 }
                 Category::LeftBrace => {
                     self.token();
-                    let (end, lookup) = self.statement(0, &|c| c == Category::RightBrace)?;
+                    let (end, lookup) = self.statement(0, &|c| c == &Category::RightBrace)?;
                     let lookup = lookup.as_returnable_or_err()?;
                     if end == End::Continue {
                         return Err(unclosed_token!(token));
@@ -92,12 +92,13 @@ mod test {
     use crate::{
         {AssignOrder, Statement},
         parse,
-        token::{Base, Category, StringCategory, Token},
+        token::{Category, Token},
     };
 
-    use Base::*;
+    
     use Category::*;
     use Statement::*;
+    use crate::IdentifierType::*;
 
     fn token(category: Category, start: usize, end: usize) -> Token {
         Token {
@@ -112,7 +113,7 @@ mod test {
 
     #[test]
     fn variables() {
-        assert_eq!(result("a;"), Variable(token(Identifier(None), 0, 1)));
+        assert_eq!(result("a;"), Variable(token(Identifier(Undefined("a".to_owned())), 0, 1)));
     }
 
     #[test]
@@ -120,8 +121,8 @@ mod test {
         assert_eq!(
             result("a[0];"),
             Array(
-                token(Identifier(None), 0, 1),
-                Some(Box::new(Primitive(token(Number(Base10), 2, 3))))
+                token(Identifier(Undefined("a".to_owned())), 0, 1),
+                Some(Box::new(Primitive(token(Number(0), 2, 3))))
             )
         );
 
@@ -132,22 +133,22 @@ mod test {
                 AssignOrder::AssignReturn,
                 Box::new(Array(
                     Token {
-                        category: Identifier(None),
+                        category: Identifier(Undefined("a".to_owned())),
                         position: (0, 1)
                     },
                     None
                 )),
                 Box::new(Parameter(vec![
                     Primitive(Token {
-                        category: Number(Base10),
+                        category: Number(1),
                         position: (5, 6)
                     }),
                     Primitive(Token {
-                        category: Number(Base10),
+                        category: Number(2),
                         position: (8, 9)
                     }),
                     Primitive(Token {
-                        category: Number(Base10),
+                        category: Number(3),
                         position: (11, 12)
                     })
                 ]))
@@ -161,25 +162,25 @@ mod test {
                 AssignOrder::AssignReturn,
                 Box::new(Array(
                     Token {
-                        category: Identifier(None),
+                        category: Identifier(Undefined("a".to_owned())),
                         position: (0, 1)
                     },
                     Some(Box::new(Primitive(Token {
-                        category: Number(Base10),
+                        category: Number(0),
                         position: (2, 3)
                     })))
                 )),
                 Box::new(Parameter(vec![
                     Primitive(Token {
-                        category: Number(Base10),
+                        category: Number(1),
                         position: (8, 9)
                     }),
                     Primitive(Token {
-                        category: Number(Base10),
+                        category: Number(2),
                         position: (11, 12)
                     }),
                     Primitive(Token {
-                        category: Number(Base10),
+                        category: Number(4),
                         position: (14, 15)
                     })
                 ]))
@@ -189,11 +190,11 @@ mod test {
 
     #[test]
     fn anon_function_call() {
-        let fn_name = token(Identifier(None), 0, 1);
+        let fn_name = token(Identifier(Undefined("a".to_owned())), 0, 1);
         let args = Box::new(Parameter(vec![
-            Primitive(token(Number(Base10), 2, 3)),
-            Primitive(token(Number(Base10), 5, 6)),
-            Primitive(token(Number(Base10), 8, 9)),
+            Primitive(token(Number(1), 2, 3)),
+            Primitive(token(Number(2), 5, 6)),
+            Primitive(token(Number(3), 8, 9)),
         ]));
 
         assert_eq!(result("a(1, 2, 3);"), Call(fn_name, args));
@@ -206,41 +207,41 @@ mod test {
             result("script_tag(name:\"cvss_base\", value:1 + 1 % 2);"),
             Call(
                 Token {
-                    category: Identifier(None),
+                    category: Identifier(Undefined("script_tag".to_owned())),
                     position: (0, 10)
                 },
                 Box::new(Parameter(vec![
                     NamedParameter(
                         Token {
-                            category: Identifier(None),
+                            category: Identifier(Undefined("name".to_owned())),
                             position: (11, 15)
                         },
                         Box::new(Primitive(Token {
-                            category: String(StringCategory::Unquotable),
+                            category: String("cvss_base".to_owned()),
                             position: (17, 26)
                         }))
                     ),
                     NamedParameter(
                         Token {
-                            category: Identifier(None),
+                            category: Identifier(Undefined("value".to_owned())),
                             position: (29, 34)
                         },
                         Box::new(Operator(
                             Plus,
                             vec![
                                 Primitive(Token {
-                                    category: Number(Base10),
+                                    category: Number(1),
                                     position: (35, 36)
                                 }),
                                 Operator(
                                     Percent,
                                     vec![
                                         Primitive(Token {
-                                            category: Number(Base10),
+                                            category: Number(1),
                                             position: (39, 40)
                                         }),
                                         Primitive(Token {
-                                            category: Number(Base10),
+                                            category: Number(2),
                                             position: (43, 44)
                                         })
                                     ]
@@ -256,16 +257,16 @@ mod test {
             result("script_tag(name: 2);"),
             Call(
                 Token {
-                    category: Identifier(None),
+                    category: Identifier(Undefined("script_tag".to_owned())),
                     position: (0, 10)
                 },
                 Box::new(Parameter(vec![NamedParameter(
                     Token {
-                        category: Identifier(None),
+                        category: Identifier(Undefined("name".to_owned())),
                         position: (11, 15)
                     },
                     Box::new(Primitive(Token {
-                        category: Number(Base10),
+                        category: Number(2),
                         position: (17, 18)
                     }))
                 )]))
