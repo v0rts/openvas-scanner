@@ -2,13 +2,13 @@
 
 ## NAME
 
-**make_array** - takes any even number of unnamed arguments and returns an dictionary made from them.
+**make_array** - takes any even number of unnamed arguments and returns an dictionary made from them
 
 ## SYNOPSIS
 
 *dict* **make_array**(any, any, ...);
 
-**make_array** - takes any even number of unnamed arguments and returns an dictionary made from them.
+**make_array** takes any even number of unnamed arguments and returns an dictionary made from them.
 
 ## DESCRIPTION
 
@@ -21,7 +21,7 @@ Returns a dictionary made out of the arguments.
 
 ## Error
 
-Returns NULL when the amount of arguments are not even.
+Drops the last value when the arguments are not even.
 
 ## EXAMPLES
 

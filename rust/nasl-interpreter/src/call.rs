@@ -1,36 +1,35 @@
-use nasl_syntax::{
-    Statement, Statement::*, Token,
+use nasl_syntax::{Statement, Statement::*, Token};
+
+use crate::{
+    error::InterpretError, interpreter::InterpretResult, lookup, ContextType, Interpreter,
+    NaslValue, lookup_keys::FC_ANON_ARGS,
 };
 use std::collections::HashMap;
 
-
-use crate::{interpreter::InterpretResult, Interpreter, context::NaslContextType, lookup, ContextType, error::InterpretError};
-
 /// Is a trait to handle function calls within nasl.
 pub(crate) trait CallExtension {
-    /// Is the actual handling of postfix. The caller must ensure that needs_postfix is called previously.
-    fn call(&mut self, name: Token, arguments: Box<Statement>) -> InterpretResult;
+    fn call(&mut self, name: &Token, arguments: &Statement) -> InterpretResult;
 }
 
 impl<'a> CallExtension for Interpreter<'a> {
     #[inline(always)]
-    fn call(&mut self, name: Token, arguments: Box<Statement>) -> InterpretResult {
-        let name = &Self::identifier(&name)?;
+    fn call(&mut self, name: &Token, arguments: &Statement) -> InterpretResult {
+        let name = &Self::identifier(name)?;
         // get the context
         let mut named = HashMap::new();
         let mut position = vec![];
-        match *arguments{
+        match arguments {
             Parameter(params) => {
                 for p in params {
                     match p {
                         NamedParameter(token, val) => {
-                            let val = self.resolve(*val)?;
-                            let name = Self::identifier(&token)?;
+                            let val = self.resolve(val)?;
+                            let name = Self::identifier(token)?;
                             named.insert(name, ContextType::Value(val));
                         }
                         val => {
                             let val = self.resolve(val)?;
-                            position.push(ContextType::Value(val));
+                            position.push(val);
                         }
                     }
                 }
@@ -41,13 +40,14 @@ impl<'a> CallExtension for Interpreter<'a> {
                 ))
             }
         };
-
-        self.registrat
-            .create_root_child(NaslContextType::Function(named, position));
-        // TODO change to use root context to lookup both
+        named.insert(
+            FC_ANON_ARGS.to_owned(),
+            ContextType::Value(NaslValue::Array(position)),
+        );
+        self.registrat.create_root_child(named);
         let result = match lookup(name) {
             // Built-In Function
-            Some(function) => match function(self.resolve_key(), self.storage, &self.registrat) {
+            Some(function) => match function(self.key, self.storage, self.registrat) {
                 Ok(value) => Ok(value),
                 Err(x) => Err(InterpretError::new(format!(
                     "unable to call function {}: {:?}",
@@ -55,12 +55,65 @@ impl<'a> CallExtension for Interpreter<'a> {
                 ))),
             },
             // Check for user defined function
-            None => todo!(
-                "{} not a built-in function and user function are not yet implemented",
-                name.to_string()
-            ),
+            None => {
+                let found = self
+                    .registrat
+                    .named(name)
+                    .ok_or_else(|| InterpretError::new(format!("function {} not found", name)))?
+                    .clone();
+                match found {
+                    ContextType::Function(params, stmt) => {
+                        // prepare default values
+                        for p in params {
+                            match self.registrat.named(&p) {
+                                None => {
+                                    // add default NaslValue::Null for each defined params
+                                    self.registrat
+                                        .add_local(&p, ContextType::Value(NaslValue::Null));
+                                }
+                                Some(_) => {}
+                            }
+                        }
+                        match self.resolve(&stmt)? {
+                            NaslValue::Return(x) => Ok(*x),
+                            a => Ok(a),
+                        }
+                    }
+                    ContextType::Value(stmt) => Err(InterpretError::new(format!("unable to call stored variable {:?}", stmt))),
+                }
+            }
         };
         self.registrat.drop_last();
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nasl_syntax::parse;
+    use sink::DefaultSink;
+
+    use crate::{
+        context::Register, loader::NoOpLoader, Interpreter, NaslValue,
+    };
+
+    #[test]
+    fn default_null_on_user_defined_functions() {
+        let code = r###"
+        function test(a, b) {
+            return a + b;
+        }
+        test(a: 1, b: 2);
+        test(a: 1);
+        test();
+        "###;
+        let storage = DefaultSink::new(false);
+        let mut register = Register::default();
+        let loader = NoOpLoader::default();
+        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let mut parser = parse(code).map(|x| interpreter.resolve(&x.expect("unexpected parse error")));
+        assert_eq!(parser.next(), Some(Ok(NaslValue::Null)));
+        assert_eq!(parser.next(), Some(Ok(NaslValue::Number(3))));
+        assert_eq!(parser.next(), Some(Ok(NaslValue::Number(1))));
     }
 }

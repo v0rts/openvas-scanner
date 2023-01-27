@@ -4,7 +4,7 @@ make_toc_entry() {
     name=${file##*/}
     name=${name//.md/}
     entry=$(grep "\*\*$name\*\* - " $file)
-    entry=${entry//${name}/[${name}](${name}.md)}
+    entry=${entry//\*\*${name}\*\* -/- \*\*[${name}](${name}.md)\*\* -}
     toc="$toc\n$entry"
 }
 
@@ -27,7 +27,7 @@ make_tocs() {
                     break
                 fi
             done < $dir/index.md
-            printf "$file_content$toc" > $dir/index.md
+            printf "$file_content$toc\n" > $dir/index.md
         fi
     done
 }
