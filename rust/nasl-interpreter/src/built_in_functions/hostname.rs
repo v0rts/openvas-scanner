@@ -1,3 +1,7 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 use sink::Sink;
 use std::str;
 
@@ -8,7 +12,7 @@ use crate::{error::FunctionError, lookup_keys::TARGET, NaslFunction, NaslValue, 
 /// It does lookup TARGET and when not found falls back to 127.0.0.1 to resolve.
 /// If the TARGET is not a IP address than we assume that it already is a fqdn or a hostname and will return that instead.
 fn resolve_hostname(register: &Register) -> Result<String, FunctionError> {
-    use dns_lookup::lookup_addr;
+    use std::net::ToSocketAddrs;
 
     let default_ip = "127.0.0.1";
     // currently we use shadow variables as _FC_ANON_ARGS; the original openvas uses redis for that purpose.
@@ -20,10 +24,8 @@ fn resolve_hostname(register: &Register) -> Result<String, FunctionError> {
         },
     );
 
-    match target.parse() {
-        Ok(addr) => lookup_addr(&addr).map_err(|x| FunctionError {
-            reason: format!("Error while lookup {}: {}", addr, x),
-        }),
+    match target.to_socket_addrs() {
+        Ok(mut addr) => Ok(addr.next().map_or_else(String::new, |x|x.to_string())),
         // assumes that target is already a hostname
         Err(_) => Ok(target),
     }
@@ -38,7 +40,8 @@ pub fn get_host_names(
     _: &dyn Sink,
     register: &Register,
 ) -> Result<NaslValue, FunctionError> {
-    resolve_hostname(register).map(|x| NaslValue::Array(vec![NaslValue::String(x)]))
+    resolve_hostname(register)
+        .map(|x| NaslValue::Array(vec![NaslValue::String(x)]))
 }
 
 /// NASL function to get the current hostname

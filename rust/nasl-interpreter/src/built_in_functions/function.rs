@@ -1,5 +1,8 @@
-//! Defines various built-in functions for NASL functions.
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
 
+//! Defines various built-in functions for NASL functions.
 
 use sink::Sink;
 
@@ -45,7 +48,7 @@ mod tests {
     use crate::{Interpreter, NaslValue, NoOpLoader, Register};
 
     #[test]
-    fn make_array() {
+    fn defined_func() {
         let code = r###"
         function b() { return 2; }
         defined_func("b");

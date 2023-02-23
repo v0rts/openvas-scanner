@@ -1,10 +1,14 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Handles the postfix statement within Lexer
 use crate::{
     error::SyntaxError,
     lexer::{End, Lexer},
     operation::Operation,
     token::{Category, Token},
-    unexpected_token, Statement, AssignOrder,
+    unexpected_token, AssignOrder, Statement,
 };
 
 /// Is a trait to handle postfix statements.
@@ -84,13 +88,13 @@ impl<'a> Postfix for Lexer<'a> {
 mod test {
     use crate::{
         parse,
-        token::{Category, Token}, Statement, AssignOrder,
+        token::{Category, Token},
+        AssignOrder, Statement,
     };
 
-    
-    use Category::*;
-    use crate::Statement::*;
     use crate::IdentifierType::Undefined;
+    use crate::Statement::*;
+    use Category::*;
 
     fn result(code: &str) -> Statement {
         parse(code).next().unwrap().unwrap()

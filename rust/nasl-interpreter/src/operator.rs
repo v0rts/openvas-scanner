@@ -1,3 +1,7 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 use nasl_syntax::{Statement, TokenCategory};
 use regex::Regex;
 
@@ -10,25 +14,14 @@ pub(crate) trait OperatorExtension {
 }
 
 impl<'a> Interpreter<'a> {
-    #[inline(always)]
     fn execute(
         &mut self,
         stmts: &[Statement],
         result: impl Fn(NaslValue, Option<NaslValue>) -> InterpretResult,
     ) -> InterpretResult {
-        // operation on no values
-        if stmts.is_empty() {
-            return Err(InterpretError::new(
-                "Internal error: operation without statements is invalid.".to_string(),
-            ));
-        }
-        // operation on more than two values
-        if stmts.len() > 2 {
-            return Err(InterpretError::internal_error(
-                &stmts[0],
-                &"operation with more than two statements is invalid.".to_string(),
-            ));
-        }
+        // neither empty statements nor statements over 2 arguments should ever happen
+        // because it is handled as a SyntaxError. Therefore we don't double check and
+        // and let it run into a index out of bound panic to immediately escalate.
         let (left, right) = {
             let first = self.resolve(&stmts[0])?;
             if stmts.len() == 1 {
@@ -41,7 +34,6 @@ impl<'a> Interpreter<'a> {
     }
 }
 
-#[inline(always)]
 fn as_i64(left: NaslValue, right: Option<NaslValue>) -> (i64, i64) {
     (
         i64::from(&left),
@@ -75,10 +67,7 @@ fn match_regex(a: NaslValue, matches: Option<NaslValue>) -> InterpretResult {
     let right = matches.map(|x| x.to_string()).unwrap_or_default();
     match Regex::new(&right) {
         Ok(c) => Ok(NaslValue::Boolean(c.is_match(&a.to_string()))),
-        Err(err) => Err(InterpretError::new(format!(
-            "{} is a invalid regex: {}.",
-            right, err
-        ))),
+        Err(_) => Err(InterpretError::unparse_regex(&right)),
     }
 }
 
@@ -94,7 +83,12 @@ impl<'a> OperatorExtension for Interpreter<'a> {
             TokenCategory::Plus => self.execute(stmts, |a, b| match a {
                 NaslValue::String(x) => {
                     let right = b.map(|x| x.to_string()).unwrap_or_default();
-                    Ok(NaslValue::String(format!("{}{}", x, right)))
+                    Ok(NaslValue::String(format!("{x}{right}")))
+                }
+                NaslValue::Data(x) => {
+                    let right: String = b.map(|x| x.to_string()).unwrap_or_default();
+                    let x: String = x.into_iter().map(|b| b as char).collect();
+                    Ok(NaslValue::String(format!("{x}{right}")))
                 }
                 left => {
                     let right = b.map(|x| i64::from(&x)).unwrap_or_default();
@@ -104,6 +98,11 @@ impl<'a> OperatorExtension for Interpreter<'a> {
             TokenCategory::Minus => self.execute(stmts, |a, b| match a {
                 NaslValue::String(x) => {
                     let right: String = b.map(|x| x.to_string()).unwrap_or_default();
+                    Ok(NaslValue::String(x.replacen(&right, "", 1)))
+                }
+                NaslValue::Data(x) => {
+                    let right: String = b.map(|x| x.to_string()).unwrap_or_default();
+                    let x: String = x.into_iter().map(|b| b as char).collect();
                     Ok(NaslValue::String(x.replacen(&right, "", 1)))
                 }
                 left => {
@@ -185,13 +184,9 @@ impl<'a> OperatorExtension for Interpreter<'a> {
                 Ok(NaslValue::Boolean(i64::from(&a) <= right))
             }),
             TokenCategory::X => {
-                // operation on more than two values
-                if stmts.len() != 2 {
-                    return Err(InterpretError::internal_error(
-                        &stmts[0],
-                        &"operation is invalid.".to_owned(),
-                    ));
-                }
+                // neither empty statements nor statements over 2 arguments should ever happen
+                // because it is handled as a SyntaxError. Therefore we don't double check and
+                // and let it run into a index out of bound panic to immediately escalate.
                 let repeat = {
                     let last = self.resolve(&stmts[1])?;
                     i64::from(&last)
@@ -207,10 +202,7 @@ impl<'a> OperatorExtension for Interpreter<'a> {
                 self.resolve(repeatable)
             }
 
-            _ => Err(stmts
-                .get(0)
-                .map(|stmt| InterpretError::unsupported(stmt, "operation"))
-                .unwrap_or_else(|| InterpretError::new("Internal error: missing stmts".to_owned()))),
+            o => Err(InterpretError::wrong_category(o)),
         }
     }
 }
@@ -242,20 +234,22 @@ mod tests {
         };
     }
     create_test! {
-        numeric_plus: "1+2;" => NaslValue::Number(3),
-        string_plus: "'hello ' + 'world!';" => NaslValue::String("hello world!".to_owned()),
+        numeric_plus: "1+2;" => 3.into(),
+        string_plus: "\"hello \" + \"world!\";" => "hello world!".into(),
+        string_minus : "\"hello \" - 'o ';" => "hell".into(),
+        data_plus: "'hello ' + 'world!';" => "hello world!".into(),
+        data_minus: "'hello ' - 'o ';" => "hell".into(),
         numeric_minus : "1 - 2;" => NaslValue::Number(-1),
-        string_minus : "'hello ' - 'o ';" => NaslValue::String("hell".to_owned()),
-        multiplication: "1*2;" => NaslValue::Number(2),
-        division: "512/2;" => NaslValue::Number(256),
-        modulo: "512%2;" => NaslValue::Number(0),
-        left_shift: "512 << 2;" => NaslValue::Number(2048),
-        right_shift: "512 >> 2;" => NaslValue::Number(128),
-        unsigned_right_shift: "-2 >>> 2;" => NaslValue::Number(1073741823),
-        and: "-2 & 2;" => NaslValue::Number(2),
+        multiplication: "1*2;" => 2.into(),
+        division: "512/2;" => 256.into(),
+        modulo: "512%2;" => 0.into(),
+        left_shift: "512 << 2;" => 2048.into(),
+        right_shift: "512 >> 2;" => 128.into(),
+        unsigned_right_shift: "-2 >>> 2;" => 1073741823.into(),
+        and: "-2 & 2;" => 2.into(),
         or: "-2 | 2;" => NaslValue::Number(-2),
         xor: "-2 ^ 2;" => NaslValue::Number(-4),
-        pow: "2 ** 2;" => NaslValue::Number(4),
+        pow: "2 ** 2;" => 4.into(),
         not: "~2;" => NaslValue::Number(-3),
         r_match: "'hello' =~ 'hell';" => NaslValue::Boolean(true),
         r_not_match: "'hello' !~ 'hell';" => NaslValue::Boolean(false),
@@ -272,6 +266,7 @@ mod tests {
         less: "1 < 2;" => NaslValue::Boolean(true),
         greater_equal: "1 >= 1;" => NaslValue::Boolean(true),
         less_equal: "1 <= 1;" => NaslValue::Boolean(true),
+        xxxgonna_give_it_to_ya: "script_oid('hi') x 200;" => NaslValue::Null,
         gonna_give_it_to_ya: "script_oid('hi') x 200;" => NaslValue::Null
     }
 }

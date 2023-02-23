@@ -1,21 +1,15 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Defines NASL functions that deal with string and their helpers
 
-use core::fmt::{self, Write};
+use core::fmt::Write;
 use sink::Sink;
 
-use crate::{
-    error::FunctionError, NaslFunction, NaslValue, Register,
-};
+use crate::{context::ContextType, error::FunctionError, NaslFunction, NaslValue, Register};
 
 use super::resolve_positional_arguments;
-
-impl From<fmt::Error> for FunctionError {
-    fn from(e: fmt::Error) -> Self {
-        Self {
-            reason: format!("{}", e),
-        }
-    }
-}
 
 fn append_nasl_value_as_u8(data: &mut Vec<u8>, p: &NaslValue) {
     match p {
@@ -57,11 +51,15 @@ fn raw_string(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, F
 
 fn write_nasl_string(s: &mut String, value: &NaslValue) -> Result<(), FunctionError> {
     match value {
-        NaslValue::String(x) => write!(s, "{}", x),
+        NaslValue::String(x) => write!(s, "{x}"),
+        NaslValue::Data(x) => {
+            let x = x.iter().map(|x| *x as char).collect::<String>();
+            write!(s, "{x}")
+        }
         NaslValue::Number(x) => {
             let c = *x as u8 as char;
             if c.is_ascii_graphic() {
-                write!(s, "{}", c)
+                write!(s, "{c}")
             } else {
                 write!(s, ".")
             }
@@ -79,8 +77,8 @@ fn write_nasl_string(s: &mut String, value: &NaslValue) -> Result<(), FunctionEr
             Ok(())
         }
         _ => write!(s, "."),
-    }?;
-    Ok(())
+    }
+    .map_err(|e| FunctionError::new("string", e.into()))
 }
 
 /// NASL function to parse values into string representations
@@ -112,8 +110,8 @@ fn write_nasl_string_value(s: &mut String, value: &NaslValue) -> Result<(), Func
         NaslValue::Boolean(x) => write!(s, "{}", *x as i32),
         NaslValue::AttackCategory(x) => write!(s, "{}", *x as i32),
         _ => Ok(()),
-    }?;
-    Ok(())
+    }
+    .map_err(|e| FunctionError::new("string", e.into()))
 }
 
 /// NASL function to return uppercase equivalent of a given string
@@ -123,6 +121,12 @@ fn toupper(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, Func
     let positional = resolve_positional_arguments(register);
     Ok(match positional.get(0) {
         Some(NaslValue::String(x)) => x.to_uppercase().into(),
+        Some(NaslValue::Data(x)) => x
+            .iter()
+            .map(|x| *x as char)
+            .collect::<String>()
+            .to_uppercase()
+            .into(),
         _ => NaslValue::Null,
     })
 }
@@ -134,6 +138,12 @@ fn tolower(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, Func
     let positional = resolve_positional_arguments(register);
     Ok(match positional.get(0) {
         Some(NaslValue::String(x)) => x.to_lowercase().into(),
+        Some(NaslValue::Data(x)) => x
+            .iter()
+            .map(|x| *x as char)
+            .collect::<String>()
+            .to_lowercase()
+            .into(),
         _ => NaslValue::Null,
     })
 }
@@ -145,6 +155,7 @@ fn strlen(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, Funct
     let positional = resolve_positional_arguments(register);
     Ok(match positional.get(0) {
         Some(NaslValue::String(x)) => x.len().into(),
+        Some(NaslValue::Data(x)) => x.len().into(),
         _ => 0_i64.into(),
     })
 }
@@ -184,16 +195,102 @@ fn substr(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, Funct
 /// It only uses the first positional argument and when it is not a NaslValue:String than it returns NaslValue::Null.
 fn hexstr(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
     let positional = resolve_positional_arguments(register);
-    Ok(match positional.get(0) {
-        Some(NaslValue::String(x)) => {
-            let mut s = String::with_capacity(2 * x.len());
-            for byte in x.as_bytes() {
-                write!(s, "{:02X}", byte)?;
-            }
-            s.into()
+    let hexler = |x: &str| -> Result<NaslValue, FunctionError> {
+        let mut s = String::with_capacity(2 * x.len());
+        for byte in x.as_bytes() {
+            write!(s, "{byte:02X}").map_err(|e| FunctionError::new("hexstr", e.into()))?
         }
-        _ => NaslValue::Null,
+        Ok(s.into())
+    };
+    match positional.get(0) {
+        Some(NaslValue::String(x)) => hexler(x),
+        Some(NaslValue::Data(x)) => hexler(&x.iter().map(|x| *x as char).collect::<String>()),
+        _ => Ok(NaslValue::Null),
+    }
+}
+
+/// NASL function to return a buffer of required length with repeated occurrences of a specified string
+///
+/// Length argument is required and can be a named argument or a positional argument.
+/// Data argument is an optional named argument and is taken to be "X" if not provided.
+fn crap(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+    let data = match register.named("data") {
+        None => "X",
+        Some(ContextType::Value(NaslValue::String(x))) => x,
+        Some(x) => {
+            let ek = match x {
+                ContextType::Value(a) => ("data", "string", a).into(),
+                ContextType::Function(_, _) => ("data", "string", "function").into(),
+            };
+            return Err(FunctionError::new("crap", ek));
+        }
+    };
+    match register.named("length") {
+        None => {
+            let positional = resolve_positional_arguments(register);
+            match positional.get(0) {
+                Some(NaslValue::Number(x)) => Ok(NaslValue::String(data.repeat(*x as usize))),
+                x => Err(FunctionError::new("crap", ("0", "numeric", x).into())),
+            }
+        }
+        Some(ContextType::Value(NaslValue::Number(x))) => {
+            Ok(NaslValue::String(data.repeat(*x as usize)))
+        }
+        x => Err(FunctionError::new("crap", ("length", "numeric", x).into())),
+    }
+}
+
+/// NASL function to remove trailing whitespaces from a string
+///
+/// Takes one required positional argument of string type.
+fn chomp(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+    let positional = resolve_positional_arguments(register);
+    match positional.get(0) {
+        Some(NaslValue::String(x)) => Ok(x.trim_end().to_owned().into()),
+        Some(NaslValue::Data(x)) => Ok(x
+            .iter()
+            .map(|x| *x as char)
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+            .into()),
+        x => Err(FunctionError::new("chomp", ("0", "string", x).into())),
+    }
+}
+
+/// NASL function to lookup position of a substring within a string
+///
+/// The first positional argument is the *string* to search through.
+/// The second positional argument is the *string* to search for.
+/// The optional third positional argument is an *int* containing an offset from where to start the search.
+fn stridx(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+    let positional = resolve_positional_arguments(register);
+    let haystack = match positional.get(0) {
+        Some(NaslValue::String(x)) => x,
+        x => return Err(FunctionError::new("stridx", ("0", "string", x).into())),
+    };
+    let needle = match positional.get(1) {
+        Some(NaslValue::String(x)) => x,
+        x => return Err(FunctionError::new("stridx", ("1", "string", x).into())),
+    };
+    let offset = match positional.get(2) {
+        Some(NaslValue::Number(x)) => *x as usize,
+        _ => 0_usize,
+    };
+    Ok(match &haystack[offset..].find(needle) {
+        Some(index) => NaslValue::Number(*index as i64),
+        None => NaslValue::Number(-1),
     })
+}
+
+/// NASL function to display any number of NASL values
+///
+/// Internally the string function is used to concatenate the given parameters
+fn display(buf: &str, sink: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+    register
+        .logger()
+        .print(string(buf, sink, register)?.to_string());
+    Ok(NaslValue::Null)
 }
 
 /// Returns found function for key or None when not found
@@ -206,6 +303,10 @@ pub fn lookup(key: &str) -> Option<NaslFunction> {
         "strlen" => Some(strlen),
         "string" => Some(string),
         "substr" => Some(substr),
+        "crap" => Some(crap),
+        "chomp" => Some(chomp),
+        "stridx" => Some(stridx),
+        "display" => Some(display),
         _ => None,
     }
 }
@@ -253,7 +354,10 @@ mod tests {
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         assert_eq!(parser.next(), Some(Ok(vec![123].into())));
         assert_eq!(parser.next(), Some(Ok(vec![123, 1].into())));
-        assert_eq!(parser.next(), Some(Ok(vec![123, 1, 72, 97, 108, 108, 111].into())));
+        assert_eq!(
+            parser.next(),
+            Some(Ok(vec![123, 1, 72, 97, 108, 108, 111].into()))
+        );
     }
     #[test]
     fn tolower() {
@@ -335,6 +439,82 @@ mod tests {
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         assert_eq!(parser.next(), Some(Ok("ello".into())));
         assert_eq!(parser.next(), Some(Ok("hell".into())));
+        assert_eq!(parser.next(), Some(Ok(NaslValue::Null)));
+    }
+
+    #[test]
+    fn crap() {
+        let code = r###"
+        crap(5);
+        crap(length: 5);
+        crap(data: "ab", length: 5);
+        "###;
+        let storage = DefaultSink::new(false);
+        let mut register = Register::default();
+        let loader = NoOpLoader::default();
+        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let mut parser =
+            parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
+        assert_eq!(parser.next(), Some(Ok("XXXXX".into())));
+        assert_eq!(parser.next(), Some(Ok("XXXXX".into())));
+        assert_eq!(parser.next(), Some(Ok("ababababab".into())));
+    }
+
+    #[test]
+    fn chomp() {
+        let code = r###"
+        chomp("abc");
+        chomp("abc\n");
+        chomp("abc  ");
+        chomp("abc\n\t\r ");
+        "###;
+        let storage = DefaultSink::new(false);
+        let mut register = Register::default();
+        let loader = NoOpLoader::default();
+        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let mut parser =
+            parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
+        assert_eq!(parser.next(), Some(Ok("abc".into())));
+        assert_eq!(parser.next(), Some(Ok("abc".into())));
+        assert_eq!(parser.next(), Some(Ok("abc".into())));
+        assert_eq!(parser.next(), Some(Ok("abc".into())));
+    }
+
+    #[test]
+    fn stridx() {
+        let code = r###"
+        stridx("abc", "bcd");
+        stridx("abc", "bc");
+        stridx("abc", "abc");
+        stridx("blahabc", "abc", 4);
+        stridx("blahabc", "abc", 3);
+        stridx("blahbc", "abc", 2);
+        "###;
+        let storage = DefaultSink::new(false);
+        let mut register = Register::default();
+        let loader = NoOpLoader::default();
+        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let mut parser =
+            parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
+        assert_eq!(parser.next(), Some(Ok((-1_i64).into())));
+        assert_eq!(parser.next(), Some(Ok(1_i64.into())));
+        assert_eq!(parser.next(), Some(Ok(0_i64.into())));
+        assert_eq!(parser.next(), Some(Ok(0_i64.into())));
+        assert_eq!(parser.next(), Some(Ok(1_i64.into())));
+        assert_eq!(parser.next(), Some(Ok((-1_i64).into())));
+    }
+
+    #[test]
+    fn display() {
+        let code = r###"
+        display("abc");
+        "###;
+        let storage = DefaultSink::new(false);
+        let mut register = Register::default();
+        let loader = NoOpLoader::default();
+        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let mut parser =
+            parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         assert_eq!(parser.next(), Some(Ok(NaslValue::Null)));
     }
 }

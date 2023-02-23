@@ -1,3 +1,7 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 use nasl_syntax::{parse, Statement};
 use sink::DefaultSink;
 
@@ -18,7 +22,7 @@ impl<'a> IncludeExtension for Interpreter<'a> {
                 let result = parse(&code)
                     .map(|parsed| match parsed {
                         Ok(stmt) => inter.resolve(&stmt),
-                        Err(err) => Err(InterpretError::from(err)),
+                        Err(err) => Err(InterpretError::include_syntax_error(&key, err)),
                     })
                     .find(|e| e.is_err());
                 match result {
@@ -26,7 +30,7 @@ impl<'a> IncludeExtension for Interpreter<'a> {
                     None => Ok(NaslValue::Null),
                 }
             }
-            a => Err(InterpretError::new(format!("invalid: {:?}", a))),
+            _ => Err(InterpretError::unsupported(name, "string")),
         }
     }
 }
@@ -75,12 +79,12 @@ mod tests {
         let mut interpreter = Interpreter::new("1", &storage, loader, &mut register);
         let mut interpreter = parse(code).map(|x| interpreter.resolve(&x.expect("expected")));
         assert_eq!(interpreter.next(), Some(Ok(NaslValue::Null)));
-        assert_eq!(interpreter.next(), Some(Ok(NaslValue::Number(12))));
+        assert_eq!(interpreter.next(), Some(Ok(12.into())));
         assert_eq!(
             interpreter.next(),
             Some(Ok(NaslValue::Dict(HashMap::from([(
                 "hello".to_owned(),
-                NaslValue::String("world".to_owned())
+                NaslValue::Data("world".as_bytes().into())
             )]))))
         );
     }

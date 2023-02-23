@@ -1,4 +1,8 @@
-//! Defines NVT 
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+//! Defines NVT
 use std::str::FromStr;
 
 use crate::SinkError;
@@ -27,7 +31,7 @@ use crate::SinkError;
 /// - End
 ///
 /// It is defined as a numeric value instead of string representations due to downwards compatible reasons.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub enum ACT {
     /// Defines a initializer
     Init = 0,
@@ -70,7 +74,7 @@ impl FromStr for ACT {
             "8" => ACT::KillHost,
             "9" => ACT::Flood,
             "10" => ACT::End,
-            _ => return Err(SinkError::UnexpectedData(s.to_owned()) ),
+            _ => return Err(SinkError::UnexpectedData(s.to_owned())),
         })
     }
 }
@@ -218,7 +222,7 @@ Those ports must be found and open. Otherwise it will be skipped."### =>
     r###"Preferences that can be set by a User"### =>
     Preference(NvtPreference),
     r###"Reference either cve, bid, ..."### =>
-    Reference(NvtRef),
+    Reference(Vec<NvtRef>),
     r###"Category of a plugin
 
 Category will be used to identify the type of the NASL plugin."### =>
@@ -253,6 +257,27 @@ pub struct NvtRef {
     pub text: Option<String>,
 }
 
+impl From<(&str, &str)> for NvtRef {
+    fn from(value: (&str, &str)) -> Self {
+        let (class, id) = value;
+        Self {
+            class: class.to_owned(),
+            id: id.to_owned(),
+            text: None,
+        }
+    }
+}
+
+impl From<(&str, String)> for NvtRef {
+    fn from(value: (&str, String)) -> Self {
+        let (class, id) = value;
+        Self {
+            class: class.to_owned(),
+            id,
+            text: None,
+        }
+    }
+}
 impl NvtRef {
     pub fn new(class: String, id: String, text: Option<String>) -> Self {
         Self { class, id, text }

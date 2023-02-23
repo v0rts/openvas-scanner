@@ -1,6 +1,15 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 use nasl_syntax::Statement;
 
-use crate::{error::InterpretError, interpreter::NaslValue, lookup_keys::FC_ANON_ARGS};
+use crate::{
+    error::InterpretError,
+    logger::{DefaultLogger, NaslLogger},
+    lookup_keys::FC_ANON_ARGS,
+    NaslValue,
+};
 
 /// Contexts are responsible to locate, add and delete everything that is declared within a NASL plugin
 
@@ -13,6 +22,68 @@ pub enum ContextType {
     Value(NaslValue),
 }
 
+impl ToString for ContextType {
+    fn to_string(&self) -> String {
+        match self {
+            ContextType::Function(_, _) => "".to_owned(),
+            ContextType::Value(v) => v.to_string(),
+        }
+    }
+}
+
+impl From<NaslValue> for ContextType {
+    fn from(value: NaslValue) -> Self {
+        Self::Value(value)
+    }
+}
+
+impl From<Vec<u8>> for ContextType {
+    fn from(s: Vec<u8>) -> Self {
+        Self::Value(s.into())
+    }
+}
+
+impl From<bool> for ContextType {
+    fn from(b: bool) -> Self {
+        Self::Value(b.into())
+    }
+}
+
+impl From<&str> for ContextType {
+    fn from(s: &str) -> Self {
+        Self::Value(s.into())
+    }
+}
+
+impl From<String> for ContextType {
+    fn from(s: String) -> Self {
+        Self::Value(s.into())
+    }
+}
+
+impl From<i32> for ContextType {
+    fn from(n: i32) -> Self {
+        Self::Value(n.into())
+    }
+}
+
+impl From<i64> for ContextType {
+    fn from(n: i64) -> Self {
+        Self::Value(n.into())
+    }
+}
+
+impl From<usize> for ContextType {
+    fn from(n: usize) -> Self {
+        Self::Value(n.into())
+    }
+}
+
+impl From<HashMap<String, NaslValue>> for ContextType {
+    fn from(x: HashMap<String, NaslValue>) -> Self {
+        Self::Value(x.into())
+    }
+}
 /// Registers all NaslContext
 ///
 /// When creating a new context call a corresponding create method.
@@ -20,6 +91,7 @@ pub enum ContextType {
 /// deleted by calling drop_last when the context runs out of scope.
 pub struct Register {
     blocks: Vec<NaslContext>,
+    logger: Box<dyn NaslLogger>,
 }
 
 impl Register {
@@ -27,16 +99,34 @@ impl Register {
     pub fn new() -> Self {
         Self {
             blocks: vec![NaslContext::default()],
+            logger: Box::new(DefaultLogger::new()),
         }
     }
 
     /// Creates a root Register based on the given initial values
-    pub fn root_initial(initial: Vec<(String, ContextType)>) -> Self {
+    pub fn root_initial(initial: &[(String, ContextType)]) -> Self {
+        let mut defined = HashMap::with_capacity(initial.len());
+        for (k, v) in initial {
+            defined.insert(k.to_owned(), v.to_owned());
+        }
         let root = NaslContext {
-            defined: initial.into_iter().collect(),
+            defined,
             ..Default::default()
         };
-        Self { blocks: vec![root] }
+        Self {
+            blocks: vec![root],
+            logger: Box::<DefaultLogger>::default(),
+        }
+    }
+
+    /// Get the logger to print messages
+    pub fn logger(&self) -> &dyn NaslLogger {
+        &*self.logger
+    }
+
+    /// Set a new logger
+    pub fn set_logger(&mut self, logger: Box<dyn NaslLogger>) {
+        self.logger = logger;
     }
 
     /// Returns the next index
@@ -108,11 +198,7 @@ impl Register {
         value: ContextType,
     ) -> Result<(), InterpretError> {
         if idx >= self.blocks.len() {
-            Err(InterpretError::new(format!(
-                "{} is higher than available blocks ({})",
-                idx,
-                self.blocks.len()
-            )))
+            panic!("The given index should be retrieved by named_value. Therefore this should not happen.");
         } else {
             let global = &mut self.blocks[idx];
             global.add_named(name, value);

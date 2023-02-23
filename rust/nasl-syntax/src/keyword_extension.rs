@@ -1,3 +1,7 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 use crate::{
     error::SyntaxError,
     grouping_extension::Grouping,
@@ -193,10 +197,24 @@ impl<'a> Lexer<'a> {
         }
         Err(unexpected_end!("exit"))
     }
+
+    fn map_syntax_error_to_unclosed_left_paren(e: SyntaxError) -> SyntaxError {
+        match e.kind() {
+            crate::ErrorKind::UnexpectedToken(k) => unclosed_token!(Token {
+                category: Category::LeftParen,
+                position: k.position
+            }),
+            _ => e,
+        }
+    }
+
     fn parse_for(&mut self) -> Result<(End, Statement), SyntaxError> {
         self.jump_to_left_parenthesis()?;
         let (end, assignment) = self.statement(0, &|c| c == &Category::Semicolon)?;
-        if !matches!(assignment, Statement::Assign(_, _, _, _)) {
+        if !matches!(
+            assignment,
+            Statement::Assign(_, _, _, _) | Statement::NoOp(_)
+        ) {
             return Err(unexpected_statement!(assignment));
         }
         if end == End::Continue {
@@ -208,9 +226,24 @@ impl<'a> Lexer<'a> {
         if end == End::Continue {
             return Err(unclosed_statement!(condition));
         }
-        let (end, update) = self.statement(0, &|c| c == &Category::RightParen)?;
-        if end == End::Continue {
-            return Err(unclosed_statement!(update));
+        let (end, update) = match self.peek() {
+            // no update statement provided
+            Some(Token {
+                category: Category::RightParen,
+                position: _,
+            }) => {
+                self.token();
+                (End::Done(Category::RightParen), Statement::NoOp(None))
+            }
+            _ => self
+                .statement(0, &|c| c == &Category::RightParen)
+                .map_err(Self::map_syntax_error_to_unclosed_left_paren)?,
+        };
+        if !matches!(end, End::Done(Category::RightParen)) {
+            return Err(unclosed_token!(Token {
+                category: Category::LeftParen,
+                position: update.as_token().map_or_else(|| (0, 0), |t| t.position)
+            }));
         }
         let (end, body) = self.statement(0, &|c| c == &Category::Semicolon)?;
         match end {
@@ -229,9 +262,14 @@ impl<'a> Lexer<'a> {
 
     fn parse_while(&mut self, token: Token) -> Result<(End, Statement), SyntaxError> {
         self.jump_to_left_parenthesis()?;
-        let (end, condition) = self.statement(0, &|c| c == &Category::RightParen)?;
-        if !end {
-            return Err(unclosed_token!(token));
+        let (end, condition) = self
+            .statement(0, &|c| c == &Category::RightParen)
+            .map_err(Self::map_syntax_error_to_unclosed_left_paren)?;
+        if !matches!(end, End::Done(Category::RightParen)) {
+            return Err(unclosed_token!(Token {
+                category: Category::LeftParen,
+                position: condition.as_token().map_or_else(|| (0, 0), |t| t.position)
+            }));
         }
         let condition = condition.as_returnable_or_err()?;
         let (end, body) = self.statement(0, &|c| c == &Category::Semicolon)?;
@@ -244,7 +282,6 @@ impl<'a> Lexer<'a> {
         ))
     }
     fn parse_repeat(&mut self, token: Token) -> Result<(End, Statement), SyntaxError> {
-        // TODO remove repetition
         let (end, body) = self.statement(0, &|c| c == &Category::Semicolon)?;
 
         if !end {
@@ -285,7 +322,9 @@ impl<'a> Lexer<'a> {
         let r#in: Statement = {
             let token = self.token().ok_or_else(|| unexpected_end!("in foreach"))?;
             match token.category() {
-                Category::LeftParen => self.parse_paren(token),
+                Category::LeftParen => self
+                    .parse_paren(token.clone())
+                    .map_err(|_| unclosed_token!(token)),
                 _ => Err(unexpected_token!(token)),
             }?
         };
@@ -387,20 +426,20 @@ mod test {
                         category: Identifier(Undefined("script_oid".to_owned())),
                         position: (1, 18)
                     },
-                    Box::new(Parameter(vec![Primitive(Token {
-                        category: String("1".to_owned()),
+                    vec![Primitive(Token {
+                        category: Data(vec![49]),
                         position: (1, 29)
-                    })]))
+                    })]
                 )),
                 Some(Box::new(Call(
                     Token {
                         category: Identifier(Undefined("display".to_owned())),
                         position: (1, 40)
                     },
-                    Box::new(Parameter(vec![Primitive(Token {
-                        category: String("hi".to_owned()),
+                    vec![Primitive(Token {
+                        category: Data(vec![104, 105]),
                         position: (1, 48)
-                    })]))
+                    })]
                 )))
             )
         );
@@ -497,10 +536,7 @@ mod test {
         ];
         for call in test_cases {
             assert!(
-                matches!(
-                    parse(&format!("{};", call)).next().unwrap().unwrap(),
-                    Exit(_),
-                ),
+                matches!(parse(&format!("{call};")).next().unwrap().unwrap(), Exit(_),),
                 "{}",
                 call
             );
@@ -519,7 +555,7 @@ mod test {
         for call in test_cases {
             assert!(
                 matches!(
-                    parse(&format!("{};", call)).next().unwrap().unwrap(),
+                    parse(&format!("{call};")).next().unwrap().unwrap(),
                     Return(_),
                 ),
                 "{}",
@@ -531,6 +567,11 @@ mod test {
     #[test]
     fn for_loop() {
         let code = "for (i = 0; i < 10; i++) display('hi');";
+        assert!(matches!(
+            parse(code).next().unwrap().unwrap(),
+            For(_, _, _, _)
+        ));
+        let code = "for (i = 0; i < 10; ) i = 10;";
         assert!(matches!(
             parse(code).next().unwrap().unwrap(),
             For(_, _, _, _)
@@ -558,7 +599,7 @@ mod test {
         for call in test_cases {
             assert!(
                 matches!(
-                    parse(&format!("{};", call)).next().unwrap().unwrap(),
+                    parse(&format!("{call};")).next().unwrap().unwrap(),
                     ForEach(_, _, _),
                 ),
                 "{}",

@@ -1,8 +1,14 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 use crate::{
     error::SyntaxError,
-    lexer::{Lexer, End},
+    lexer::{End, Lexer},
     token::{Category, Token},
-    unclosed_token, unexpected_token, variable_extension::CommaGroup, Statement, AssignOrder,
+    unclosed_token, unexpected_token,
+    variable_extension::CommaGroup,
+    AssignOrder, Statement,
 };
 
 pub(crate) trait Grouping {
@@ -60,15 +66,11 @@ impl<'a> Grouping for Lexer<'a> {
 
     fn parse_grouping(&mut self, token: Token) -> Result<(End, Statement), SyntaxError> {
         match token.category() {
-            Category::LeftParen => self
-                .parse_paren(token)
-                .map(|stmt| (End::Continue, stmt)),
+            Category::LeftParen => self.parse_paren(token).map(|stmt| (End::Continue, stmt)),
             Category::LeftCurlyBracket => self
                 .parse_block(token)
                 .map(|stmt| (End::Done(Category::LeftCurlyBracket), stmt)),
-            Category::LeftBrace => self
-                .parse_brace(token)
-                .map(|stmt| (End::Done(Category::LeftBrace), stmt)),
+            Category::LeftBrace => self.parse_brace(token).map(|stmt| (End::Continue, stmt)),
             _ => Err(unexpected_token!(token)),
         }
     }
@@ -77,14 +79,14 @@ impl<'a> Grouping for Lexer<'a> {
 #[cfg(test)]
 mod test {
     use crate::{
-        {AssignOrder, Statement},
         parse,
         token::{Category, Token},
+        {AssignOrder, Statement},
     };
 
+    use crate::IdentifierType::Undefined;
     use Category::*;
     use Statement::*;
-    use crate::IdentifierType::Undefined;
 
     fn result(code: &str) -> Statement {
         parse(code).next().unwrap().unwrap()

@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
 
-use nasl_syntax::{IdentifierType, Statement, Statement::*, Token, TokenCategory, ACT};
+use nasl_syntax::{IdentifierType, Statement, Statement::*, Token, TokenCategory};
 use sink::Sink;
 
 use crate::{
@@ -8,111 +10,12 @@ use crate::{
     call::CallExtension,
     context::{ContextType, Register},
     declare::{DeclareFunctionExtension, DeclareVariableExtension},
-    error::InterpretError,
     include::IncludeExtension,
     loader::Loader,
     loop_extension::LoopExtension,
     operator::OperatorExtension,
+    InterpretError, NaslValue,
 };
-
-/// Represents a valid Value of NASL
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum NaslValue {
-    /// String value
-    String(String),
-    /// Data value
-    Data(Vec<u8>),
-    /// Number value
-    Number(i64),
-    /// Array value
-    Array(Vec<NaslValue>),
-    /// Array value
-    Dict(HashMap<String, NaslValue>),
-    /// Boolean value
-    Boolean(bool),
-    /// Attack category keyword
-    AttackCategory(ACT),
-    /// Null value
-    Null,
-    /// Returns value of the context
-    Return(Box<NaslValue>),
-    /// Signals continuing a loop
-    Continue,
-    /// Signals a break of a control structure
-    Break,
-    /// Exit value of the script
-    Exit(i64),
-}
-
-impl From<Vec<u8>> for NaslValue {
-    fn from(s: Vec<u8>) -> Self {
-        Self::Data(s)
-    }
-}
-
-impl From<bool> for NaslValue {
-    fn from(b: bool) -> Self {
-        NaslValue::Boolean(b)
-    }
-}
-
-impl From<&str> for NaslValue {
-    fn from(s: &str) -> Self {
-        Self::String(s.to_owned())
-    }
-}
-
-impl From<String> for NaslValue {
-    fn from(s: String) -> Self {
-        Self::String(s)
-    }
-}
-
-impl From<i64> for NaslValue {
-    fn from(n: i64) -> Self {
-        Self::Number(n)
-    }
-}
-
-impl From<usize> for NaslValue {
-    fn from(n: usize) -> Self {
-        Self::Number(n as i64)
-    }
-}
-
-impl From<HashMap<String, NaslValue>> for NaslValue {
-    fn from(x: HashMap<String, NaslValue>) -> Self {
-        NaslValue::Dict(x)
-    }
-}
-
-impl ToString for NaslValue {
-    fn to_string(&self) -> String {
-        match self {
-            NaslValue::String(x) => x.to_owned(),
-            NaslValue::Number(x) => x.to_string(),
-            NaslValue::Array(x) => x
-                .iter()
-                .enumerate()
-                .map(|(i, v)| format!("{}: {}", i, v.to_string()))
-                .collect::<Vec<String>>()
-                .join(","),
-            NaslValue::Data(x) => x.iter().map(|x| *x as char).collect(),
-            NaslValue::Dict(x) => x
-                .iter()
-                .map(|(k, v)| format!("{}: {}", k, v.to_string()))
-                .collect::<Vec<String>>()
-                .join(","),
-            NaslValue::Boolean(x) => x.to_string(),
-            NaslValue::Null => "\0".to_owned(),
-            NaslValue::Exit(rc) => format!("exit({})", rc),
-            NaslValue::AttackCategory(category) => IdentifierType::ACT(*category).to_string(),
-            NaslValue::Return(rc) => format!("return({:?})", *rc),
-            NaslValue::Continue => "".to_string(),
-            NaslValue::Break => "".to_string(),
-        }
-    }
-}
 
 /// Used to interpret a Statement
 pub struct Interpreter<'a> {
@@ -120,89 +23,6 @@ pub struct Interpreter<'a> {
     pub(crate) registrat: &'a mut Register,
     pub(crate) storage: &'a dyn Sink,
     pub(crate) loader: &'a dyn Loader,
-}
-
-impl From<NaslValue> for bool {
-    fn from(value: NaslValue) -> Self {
-        match value {
-            NaslValue::String(string) => !string.is_empty() && string != "0",
-            NaslValue::Array(v) => !v.is_empty(),
-            NaslValue::Data(v) => !v.is_empty(),
-            NaslValue::Boolean(boolean) => boolean,
-            NaslValue::Null => false,
-            NaslValue::Number(number) => number != 0,
-            NaslValue::Exit(number) => number != 0,
-            NaslValue::AttackCategory(_) => true,
-            NaslValue::Dict(v) => !v.is_empty(),
-            NaslValue::Return(_) => true,
-            NaslValue::Continue => false,
-            NaslValue::Break => false,
-        }
-    }
-}
-
-impl From<&NaslValue> for i64 {
-    fn from(value: &NaslValue) -> Self {
-        match value {
-            NaslValue::String(_) => 1,
-            &NaslValue::Number(x) => x,
-            NaslValue::Array(_) => 1,
-            NaslValue::Data(_) => 1,
-            NaslValue::Dict(_) => 1,
-            &NaslValue::Boolean(x) => x as i64,
-            &NaslValue::AttackCategory(x) => x as i64,
-            NaslValue::Null => 0,
-            &NaslValue::Exit(x) => x,
-            &NaslValue::Return(_) => -1,
-            &NaslValue::Continue => 0,
-            &NaslValue::Break => 0,
-        }
-    }
-}
-
-impl From<NaslValue> for i64 {
-    fn from(nv: NaslValue) -> Self {
-        i64::from(&nv)
-    }
-}
-
-impl TryFrom<&Token> for NaslValue {
-    type Error = InterpretError;
-
-    fn try_from(token: &Token) -> Result<Self, Self::Error> {
-        match token.category() {
-            TokenCategory::String(category) | TokenCategory::IPv4Address(category) => {
-                Ok(NaslValue::String(category.clone()))
-            }
-            TokenCategory::Identifier(IdentifierType::Undefined(id)) => {
-                Ok(NaslValue::String(id.clone()))
-            }
-            TokenCategory::Number(num) => Ok(NaslValue::Number(*num)),
-            TokenCategory::Identifier(IdentifierType::Null) => Ok(NaslValue::Null),
-            TokenCategory::Identifier(IdentifierType::True) => Ok(NaslValue::Boolean(true)),
-            TokenCategory::Identifier(IdentifierType::False) => Ok(NaslValue::Boolean(false)),
-            _ => Err(InterpretError::new(format!(
-                "{} is not a primitive.",
-                token.category()
-            ))),
-        }
-    }
-}
-
-impl From<NaslValue> for Vec<NaslValue> {
-    fn from(value: NaslValue) -> Self {
-        match value {
-            NaslValue::Array(ret) => ret,
-            NaslValue::Dict(ret) => ret.values().cloned().collect(),
-            NaslValue::Boolean(_) => vec![value],
-            NaslValue::Number(_) => vec![value],
-            NaslValue::String(ret) => ret
-                .chars()
-                .map(|x| NaslValue::String(x.to_string()))
-                .collect(),
-            _ => vec![],
-        }
-    }
 }
 
 /// Interpreter always returns a NaslValue or an InterpretError
@@ -228,11 +48,8 @@ impl<'a> Interpreter<'a> {
 
     pub(crate) fn identifier(token: &Token) -> Result<String, InterpretError> {
         match token.category() {
-            TokenCategory::Identifier(IdentifierType::Undefined(x)) => Ok(x.clone()),
-            _ => Err(InterpretError::new(format!(
-                "{} is not a primitive.",
-                token.category()
-            ))),
+            TokenCategory::Identifier(IdentifierType::Undefined(x)) => Ok(x.to_owned()),
+            cat => Err(InterpretError::wrong_category(cat)),
         }
     }
 
@@ -240,10 +57,10 @@ impl<'a> Interpreter<'a> {
     pub fn resolve(&mut self, statement: &Statement) -> InterpretResult {
         match statement {
             Array(name, position) => {
-                let name = &Self::identifier(name)?;
+                let name = Self::identifier(name)?;
                 let val = self
                     .registrat
-                    .named(name)
+                    .named(&name)
                     .unwrap_or(&ContextType::Value(NaslValue::Null));
                 let val = val.clone();
 
@@ -262,14 +79,16 @@ impl<'a> Interpreter<'a> {
                     }
                     (Some(_), ContextType::Value(NaslValue::Null)) => Ok(NaslValue::Null),
                     (Some(p), _) => Err(InterpretError::unsupported(p, "array")),
-                    (_, _) => Err(InterpretError::new(format!("{} is not resolvable.", name))),
+                    (None, ContextType::Function(_, _)) => {
+                        Err(InterpretError::unsupported(statement, "variable"))
+                    }
                 }
             }
             Exit(stmt) => {
                 let rc = self.resolve(stmt)?;
                 match rc {
                     NaslValue::Number(rc) => Ok(NaslValue::Exit(rc)),
-                    _ => Err(InterpretError::new("expected numeric value".to_string())),
+                    _ => Err(InterpretError::unsupported(stmt, "numeric")),
                 }
             }
             Return(stmt) => {
@@ -288,11 +107,12 @@ impl<'a> Interpreter<'a> {
             Primitive(token) => TryFrom::try_from(token),
             Variable(token) => {
                 let name: NaslValue = TryFrom::try_from(token)?;
-                match self.registrat.named(&name.to_string()).ok_or_else(|| {
-                    InterpretError::new(format!("variable {} not found", name.to_string()))
-                })? {
-                    ContextType::Function(_, _) => todo!(),
-                    ContextType::Value(result) => Ok(result.clone()),
+                match self.registrat.named(&name.to_string()) {
+                    Some(ContextType::Value(result)) => Ok(result.clone()),
+                    None => Ok(NaslValue::Null),
+                    Some(ContextType::Function(_, _)) => {
+                        Err(InterpretError::unsupported(statement, "variable"))
+                    }
                 }
             }
             Call(name, arguments) => self.call(name, arguments),
@@ -339,8 +159,8 @@ impl<'a> Interpreter<'a> {
             Break => Ok(NaslValue::Break),
         }
         .map_err(|e| {
-            if e.col == 0 && e.line == 0 {
-                InterpretError::from_statement(statement, e.reason)
+            if e.origin.is_none() {
+                InterpretError::from_statement(statement, e.kind)
             } else {
                 e
             }

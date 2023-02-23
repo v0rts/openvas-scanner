@@ -1,8 +1,16 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //#![warn(missing_docs)]
 //! NASL Sink defines technology independent sink traits, structs ..{w;
 
 pub mod nvt;
-use std::{sync::{Arc, Mutex}, fmt::Display};
+pub mod time;
+use std::{
+    fmt::Display,
+    sync::{Arc, Mutex},
+};
 
 use nvt::{NVTField, NVTKey};
 
@@ -13,6 +21,12 @@ use nvt::{NVTField, NVTKey};
 pub enum Dispatch {
     /// Metadata of the NASL script.
     NVT(NVTField),
+}
+
+impl From<NVTField> for Dispatch {
+    fn from(value: NVTField) -> Self {
+        Self::NVT(value)
+    }
 }
 
 /// Retrieve command for a given Field
@@ -33,7 +47,7 @@ pub enum SinkError {
     ///
     /// The default solution in those cases are most of the times to try a reconnect.
     ConnectionLost(String),
-    /// The sink did expected a different kind of data and is unable to fullfil the request.
+    /// The sink did expected a different kind of data and is unable to fulfil the request.
     ///
     /// This is usually a usage error.
     UnexpectedData(String),
@@ -46,10 +60,10 @@ pub enum SinkError {
 impl Display for SinkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SinkError::Retry(p) => write!(f, "There was a temporary issue while reading {}.", p),
-            SinkError::ConnectionLost(p) => write!(f, "Connection lost {}.", p),
-            SinkError::UnexpectedData(p) => write!(f, "Unexpected data {}", p),
-            SinkError::Dirty(p) => write!(f, "Unexpected issue {}", p),
+            SinkError::Retry(p) => write!(f, "There was a temporary issue while reading {p}."),
+            SinkError::ConnectionLost(p) => write!(f, "Connection lost {p}."),
+            SinkError::UnexpectedData(p) => write!(f, "Unexpected data {p}"),
+            SinkError::Dirty(p) => write!(f, "Unexpected issue {p}"),
         }
     }
 }

@@ -1,3 +1,7 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 use crate::{
     error::SyntaxError,
     lexer::{End, Lexer},
@@ -18,7 +22,6 @@ pub(crate) trait CommaGroup {
 }
 
 impl<'a> CommaGroup for Lexer<'a> {
-    #[inline(always)]
     fn parse_comma_group(
         &mut self,
         category: Category,
@@ -31,7 +34,8 @@ impl<'a> CommaGroup for Lexer<'a> {
                 end = End::Done(category);
                 break;
             }
-            let (stmtend, param) = self.statement(0, &|c| c == &category || c == &Category::Comma)?;
+            let (stmtend, param) =
+                self.statement(0, &|c| c == &category || c == &Category::Comma)?;
             match param {
                 Statement::Parameter(nparams) => params.extend_from_slice(&nparams),
                 param => params.push(param),
@@ -52,7 +56,10 @@ impl<'a> CommaGroup for Lexer<'a> {
 
 impl<'a> Variables for Lexer<'a> {
     fn parse_variable(&mut self, token: Token) -> Result<(End, Statement), SyntaxError> {
-        if !matches!(token.category(), Category::Identifier(crate::IdentifierType::Undefined(_))) {
+        if !matches!(
+            token.category(),
+            Category::Identifier(crate::IdentifierType::Undefined(_))
+        ) {
             return Err(unexpected_token!(token));
         }
         use End::*;
@@ -63,12 +70,9 @@ impl<'a> Variables for Lexer<'a> {
                     self.token();
                     let (end, params) = self.parse_comma_group(Category::RightParen)?;
                     if end == End::Continue {
-                        return Err(unclosed_token!(token));
+                        return Err(unclosed_token!(nt));
                     }
-                    return Ok((
-                        Continue,
-                        Statement::Call(token, Box::new(Statement::Parameter(params))),
-                    ));
+                    return Ok((Continue, Statement::Call(token, params)));
                 }
                 Category::LeftBrace => {
                     self.token();
@@ -80,7 +84,7 @@ impl<'a> Variables for Lexer<'a> {
                         return Ok((Continue, Statement::Array(token, Some(Box::new(lookup)))));
                     }
                 }
-                _ => {},
+                _ => {}
             }
         }
         Ok((Continue, Statement::Variable(token)))
@@ -90,15 +94,14 @@ impl<'a> Variables for Lexer<'a> {
 #[cfg(test)]
 mod test {
     use crate::{
-        {AssignOrder, Statement},
         parse,
         token::{Category, Token},
+        {AssignOrder, Statement},
     };
 
-    
+    use crate::IdentifierType::*;
     use Category::*;
     use Statement::*;
-    use crate::IdentifierType::*;
 
     fn token(category: Category, start: usize, end: usize) -> Token {
         Token {
@@ -113,7 +116,10 @@ mod test {
 
     #[test]
     fn variables() {
-        assert_eq!(result("a;"), Variable(token(Identifier(Undefined("a".to_owned())), 1, 1)));
+        assert_eq!(
+            result("a;"),
+            Variable(token(Identifier(Undefined("a".to_owned())), 1, 1))
+        );
     }
 
     #[test]
@@ -191,11 +197,11 @@ mod test {
     #[test]
     fn anon_function_call() {
         let fn_name = token(Identifier(Undefined("a".to_owned())), 1, 1);
-        let args = Box::new(Parameter(vec![
+        let args = vec![
             Primitive(token(Number(1), 1, 3)),
             Primitive(token(Number(2), 1, 6)),
             Primitive(token(Number(3), 1, 9)),
-        ]));
+        ];
 
         assert_eq!(result("a(1, 2, 3);"), Call(fn_name, args));
     }
@@ -210,7 +216,7 @@ mod test {
                     category: Identifier(Undefined("script_tag".to_owned())),
                     position: (1, 1)
                 },
-                Box::new(Parameter(vec![
+                vec![
                     NamedParameter(
                         Token {
                             category: Identifier(Undefined("name".to_owned())),
@@ -249,7 +255,7 @@ mod test {
                             ]
                         ))
                     )
-                ]))
+                ]
             )
         );
 
@@ -260,7 +266,7 @@ mod test {
                     category: Identifier(Undefined("script_tag".to_owned())),
                     position: (1, 1)
                 },
-                Box::new(Parameter(vec![NamedParameter(
+                vec![NamedParameter(
                     Token {
                         category: Identifier(Undefined("name".to_owned())),
                         position: (1, 12)
@@ -269,9 +275,8 @@ mod test {
                         category: Number(2),
                         position: (1, 18)
                     }))
-                )]))
+                )]
             )
         );
     }
-
 }

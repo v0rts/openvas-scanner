@@ -1,3 +1,7 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 use redis::*;
 use sink::SinkError;
 use std::fmt;
@@ -22,14 +26,16 @@ pub enum DbError {
     /// Redis is currently not able to handle request and the caller needs to retry it
     Retry(String),
     /// Cannot find a DB to use; redis must be cleaned up to free available slots.
-    NoAvailDbErr(String),
+    NoAvailDbErr,
 }
 
 impl fmt::Display for DbError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            DbError::NoAvailDbErr(e) => write!(f, "No DB available: {}", e),
-            DbError::ConfigurationError(e) => write!(f, "Unable to use redis due to wrong configuration: {}", e),
+            DbError::NoAvailDbErr => write!(f, "No DB available"),
+            DbError::ConfigurationError(e) => {
+                write!(f, "Unable to use redis due to wrong configuration: {}", e)
+            }
             DbError::SystemError(e) => write!(f, "Operation system of redis has issues: {}", e),
             DbError::LibraryError(e) => write!(f, "Library issue: {}", e),
             DbError::ConnectionLost(e) => write!(f, "Connection lost: {}", e),
@@ -65,18 +71,16 @@ impl From<RedisError> for DbError {
     }
 }
 
-
 impl From<DbError> for SinkError {
     fn from(err: DbError) -> Self {
         match err {
             DbError::Unknown(_)
             | DbError::ConfigurationError(_)
             | DbError::SystemError(_)
-            | DbError::NoAvailDbErr(_) => SinkError::Dirty(err.to_string()),
+            | DbError::NoAvailDbErr => SinkError::Dirty(err.to_string()),
             DbError::ConnectionLost(_) => SinkError::ConnectionLost(err.to_string()),
             DbError::Retry(_) => SinkError::Retry(err.to_string()),
             DbError::LibraryError(_) => SinkError::UnexpectedData(err.to_string()),
         }
     }
 }
-

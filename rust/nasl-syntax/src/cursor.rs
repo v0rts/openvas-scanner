@@ -1,3 +1,7 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 ///! This module defines the Cursor as a basis for tokenizing
 use std::str::Chars;
 
@@ -48,8 +52,7 @@ impl<'a> Cursor<'a> {
                 self.col += 1;
                 Some(c)
             }
-            None => None
-
+            None => None,
         }
     }
 
@@ -70,8 +73,8 @@ impl<'a> Cursor<'a> {
         self.initial_len - self.chars.as_str().len()
     }
 
-    /// Returns the line and the colum in line of the current position
-    pub fn line_colum(&self) -> (usize, usize) {
+    /// Returns the line and the column in line of the current position
+    pub fn line_column(&self) -> (usize, usize) {
         (self.line, self.col)
     }
 }

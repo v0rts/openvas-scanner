@@ -1,3 +1,7 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Handles the prefix statement within Lexer
 use crate::{
     error::SyntaxError,
@@ -125,10 +129,7 @@ mod test {
     #[test]
     fn single_statement() {
         assert_eq!(result("1;"), Primitive(token(Number(1), 1, 1)));
-        assert_eq!(
-            result("'a';"),
-            Primitive(token(String("a".to_owned()), 1, 1))
-        );
+        assert_eq!(result("'a';"), Primitive(token(Data(vec![97]), 1, 1)));
     }
 
     #[test]

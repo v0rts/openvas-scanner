@@ -1,3 +1,7 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Defines Operations used in Lexer to be transformed to Statements.
 use crate::token::{Category, IdentifierType, Token};
 
@@ -69,7 +73,10 @@ impl Operation {
             | Category::DoublePoint
             | Category::PercentEqual
             | Category::MinusMinus => Some(Operation::Assign(token.category().clone())),
-            Category::String(_) | Category::Number(_) | Category::IPv4Address(_) => Some(Operation::Primitive),
+            Category::String(_)
+            | Category::Data(_)
+            | Category::Number(_)
+            | Category::IPv4Address(_) => Some(Operation::Primitive),
             Category::LeftParen
             | Category::LeftBrace
             | Category::LeftCurlyBracket

@@ -1,3 +1,7 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Handles the infix statement within Lexer
 
 use crate::{
@@ -157,24 +161,23 @@ fn first_element_as_named_parameter(
 mod test {
 
     use super::*;
-    
-    
+
     use crate::token::Category::*;
     use crate::token::Token;
-    use Statement::*;
     use crate::IdentifierType::Undefined;
+    use Statement::*;
 
     // simplified resolve method to verify a calculate with a given statement
-    fn resolve(code: &str, s: Statement) -> i64 {
+    fn resolve(s: Statement) -> i64 {
         let callable = |mut stmts: Vec<Statement>, calculus: Box<dyn Fn(i64, i64) -> i64>| -> i64 {
             let right = stmts.pop().unwrap();
             let left = stmts.pop().unwrap();
-            calculus(resolve(code, left), resolve(code, right))
+            calculus(resolve(left), resolve(right))
         };
         let single_callable =
             |mut stmts: Vec<Statement>, calculus: Box<dyn Fn(i64) -> i64>| -> i64 {
                 let left = stmts.pop().unwrap();
-                calculus(resolve(code, left))
+                calculus(resolve(left))
             };
         match s {
             Primitive(token) => match token.category() {
@@ -233,7 +236,7 @@ mod test {
     macro_rules! calculated_test {
         ($code:expr, $expected:expr) => {
             let expr = crate::parse($code).next().unwrap().unwrap();
-            assert_eq!(resolve($code, expr), $expected);
+            assert_eq!(resolve(expr), $expected);
         };
     }
 
@@ -301,7 +304,7 @@ mod test {
                         position: (1, 1),
                     }),
                     Primitive(Token {
-                        category: String("1".to_owned()),
+                        category: Data(vec![49]),
                         position: (1, (6 + shift) as usize),
                     }),
                 ],
@@ -380,7 +383,7 @@ mod test {
                             category: Identifier(Undefined("x".to_owned())),
                             position: (1, 1)
                         },
-                        Box::new(Parameter(vec![]))
+                        vec![]
                     ),
                     Primitive(Token {
                         category: Number(2),

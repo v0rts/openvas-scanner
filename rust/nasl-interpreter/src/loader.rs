@@ -1,8 +1,10 @@
+// Copyright (C) 2023 Greenbone Networks GmbH
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! This crate is used to load NASL code based on a name.
 
 use std::{fmt::Display, fs, path::Path};
-
-use crate::error::InterpretError;
 
 /// Defines abstract Loader error cases
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,13 +27,6 @@ impl Display for LoadError {
             LoadError::PermissionDenied(p) => write!(f, "Insufficient rights to read {}", p),
             LoadError::Dirty(p) => write!(f, "Unexpected issue while trying to read {}", p),
         }
-    }
-}
-
-impl From<LoadError> for InterpretError {
-    fn from(le: LoadError) -> Self {
-        let reason = format!("Error while loading a file: {}", le);
-        Self::new(reason)
     }
 }
 
@@ -62,24 +57,31 @@ pub struct FSPluginLoader<'a> {
     root: &'a Path,
 }
 
+impl<'a> TryFrom<&'a Path> for FSPluginLoader<'a> {
+    type Error = LoadError;
+
+    fn try_from(value: &'a Path) -> Result<Self, Self::Error> {
+        if !value.is_dir() {
+            Err(LoadError::NotFound(
+                value.to_str().unwrap_or_default().to_owned(),
+            ))
+        } else {
+            Ok(Self::new(value))
+        }
+    }
+}
+
 impl<'a> FSPluginLoader<'a> {
     /// Creates a new file system plugin loader based on the given root path
     pub fn new(root: &'a Path) -> Self {
         Self { root }
     }
-}
 
-impl<'a> Loader for FSPluginLoader<'a> {
-    fn load(&self, key: &str) -> Result<String, LoadError> {
-        let path = self.root.join(key);
-        if !path.is_file() {
-            return Err(LoadError::NotFound(format!(
-                "{} does not exist or is not accessible.",
-                path.as_os_str().to_str().unwrap_or_default()
-            )));
-        }
-        // unfortunately NASL is not UTF-8 so we need to map it manually
-        let result = fs::read(path.clone()).map(|bs| bs.iter().map(|&b| b as char).collect());
+    /// Reads content from a path
+    ///
+    /// Opens given path and reads it content by transforming bytes to char and collect to a String.  
+    pub fn load_non_utf8_path(path: &Path) -> Result<String, LoadError> {
+        let result = fs::read(path).map(|bs| bs.iter().map(|&b| b as char).collect());
         match result {
             Ok(result) => Ok(result),
             Err(err) => {
@@ -97,5 +99,19 @@ impl<'a> Loader for FSPluginLoader<'a> {
                 }
             }
         }
+    }
+}
+
+impl<'a> Loader for FSPluginLoader<'a> {
+    fn load(&self, key: &str) -> Result<String, LoadError> {
+        let path = self.root.join(key);
+        if !path.is_file() {
+            return Err(LoadError::NotFound(format!(
+                "{} does not exist or is not accessible.",
+                path.as_os_str().to_str().unwrap_or_default()
+            )));
+        }
+        // unfortunately nasl is still in iso-8859-1
+        Self::load_non_utf8_path(path.as_path())
     }
 }
