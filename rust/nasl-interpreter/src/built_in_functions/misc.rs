@@ -5,10 +5,14 @@
 //! Defines NASL miscellaneous functions
 
 use std::{
+    collections::HashMap,
     fs::File,
     io::{Read, Write},
-    time::UNIX_EPOCH,
+    thread,
+    time::{Duration, UNIX_EPOCH},
 };
+
+use chrono::{self, Datelike, Local, LocalResult, Offset, TimeZone, Timelike, Utc};
 
 use sink::Sink;
 
@@ -47,6 +51,30 @@ pub fn dec2str(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, 
     match register.named("num") {
         Some(ContextType::Value(NaslValue::Number(x))) => Ok(NaslValue::String(x.to_string())),
         x => Err(FunctionError::new("dec2str", ("0", "numeric", x).into())),
+    }
+}
+
+/// takes an integer and sleeps the amount of seconds
+pub fn sleep(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+    let positional = register.positional();
+    match positional[0] {
+        NaslValue::Number(x) => {
+            thread::sleep(Duration::new(x as u64, 0));
+            Ok(NaslValue::Null)
+        }
+        _ => Ok(NaslValue::Null),
+    }
+}
+
+/// takes an integer and sleeps the amount of microseconds
+pub fn usleep(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+    let positional = register.positional();
+    match positional[0] {
+        NaslValue::Number(x) => {
+            thread::sleep(Duration::new(0, (1000 * x) as u32));
+            Ok(NaslValue::Null)
+        }
+        _ => Ok(NaslValue::Null),
     }
 }
 
@@ -154,6 +182,94 @@ pub fn gunzip(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, F
         }
     }
 }
+/// Takes seven named arguments sec, min, hour, mday, mon, year, isdst and returns the Unix time.
+pub fn mktime(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+    let sec = match register.named("sec") {
+        Some(ContextType::Value(NaslValue::Number(x))) => *x as u32,
+        _ => 0,
+    };
+    let min = match register.named("min") {
+        Some(ContextType::Value(NaslValue::Number(x))) => *x as u32,
+        _ => 0,
+    };
+    let hour = match register.named("hour") {
+        Some(ContextType::Value(NaslValue::Number(x))) => *x as u32,
+        _ => 0,
+    };
+    let mday = match register.named("mday") {
+        Some(ContextType::Value(NaslValue::Number(x))) => *x as u32,
+        _ => 0,
+    };
+    let mon = match register.named("mon") {
+        Some(ContextType::Value(NaslValue::Number(x))) => *x as u32,
+        _ => 1,
+    };
+    let year = match register.named("year") {
+        Some(ContextType::Value(NaslValue::Number(x))) => *x as i32,
+        _ => 0,
+    };
+
+    // TODO: fix isdst
+    let _isdst = match register.named("isdst") {
+        Some(ContextType::Value(NaslValue::Number(x))) => *x as i32,
+        _ => -1,
+    };
+
+    let offset = chrono::Local::now().offset().fix().local_minus_utc();
+    let r_dt = Utc.with_ymd_and_hms(year, mon, mday, hour, min, sec);
+    match r_dt {
+        LocalResult::Single(x) => Ok(NaslValue::Number(
+            x.naive_local().timestamp() - offset as i64,
+        )),
+        _ => Ok(NaslValue::Null),
+    }
+}
+
+fn create_localtime_map<T>(date: chrono::DateTime<T>) -> HashMap<String, NaslValue>
+where
+    T: chrono::TimeZone,
+{
+    HashMap::from([
+        ("sec".to_string(), NaslValue::from(date.second() as i64)),
+        ("min".to_string(), NaslValue::from(date.minute() as i64)),
+        ("hour".to_string(), NaslValue::from(date.hour() as i64)),
+        ("mday".to_string(), NaslValue::from(date.day() as i64)),
+        ("mon".to_string(), NaslValue::from(date.month() as i64)),
+        ("year".to_string(), NaslValue::from(date.year() as i64)),
+        ("wday".to_string(), NaslValue::from(date.weekday() as i64 + 1)),
+        ("yday".to_string(), NaslValue::from(date.ordinal() as i64)),
+        // TODO: fix isdst
+        ("isdst".to_string(), NaslValue::from(0)),
+    ])
+}
+
+/// Returns an dict(mday, mon, min, wday, sec, yday, isdst, year, hour) based on optional given time in seconds and optional flag if utc or not.
+pub fn localtime(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+    let utc_flag = match register.named("utc") {
+        Some(ContextType::Value(NaslValue::Number(x))) => *x != 0,
+        Some(ContextType::Value(NaslValue::Boolean(x))) => *x,
+        _ => false,
+    };
+
+    let secs = match register.positional() {
+        [] => 0,
+        [x0, ..] => i64::from(x0),
+    };
+    let date = match (utc_flag, secs) {
+        (true, 0) => create_localtime_map(Utc::now()),
+        (true, secs) => match Utc.timestamp_opt(secs, 0) {
+                LocalResult::Single(x) => create_localtime_map(x),
+            _ => create_localtime_map(Utc::now()),
+        }
+        (false, 0) => create_localtime_map(Local::now()),
+        (false, secs) => match Local.timestamp_opt(secs, 0) {
+            LocalResult::Single(x) => create_localtime_map(x),
+            _ => create_localtime_map(Local::now())
+        },
+    };
+
+    Ok(NaslValue::Dict(date))
+}
 
 /// Returns found function for key or None when not found
 pub fn lookup(key: &str) -> Option<NaslFunction> {
@@ -164,6 +280,10 @@ pub fn lookup(key: &str) -> Option<NaslFunction> {
         "typeof" => Some(nasl_typeof),
         "isnull" => Some(isnull),
         "unixtime" => Some(unixtime),
+        "localtime" => Some(localtime),
+        "mktime" => Some(mktime),
+        "usleep" => Some(usleep),
+        "sleep" => Some(sleep),
         "gzip" => Some(gzip),
         "gunzip" => Some(gunzip),
         _ => None,
@@ -172,10 +292,11 @@ pub fn lookup(key: &str) -> Option<NaslFunction> {
 
 #[cfg(test)]
 mod tests {
+    use crate::{Interpreter, NaslValue, NoOpLoader, Register};
+    use chrono::{Offset};
     use nasl_syntax::parse;
     use sink::DefaultSink;
-
-    use crate::{Interpreter, NaslValue, NoOpLoader, Register};
+    use std::time::Instant;
 
     #[test]
     fn rand() {
@@ -335,5 +456,131 @@ mod tests {
         assert_eq!(parser.next(), Some(Ok(NaslValue::String("gz".into()))));
         parser.next();
         assert_eq!(parser.next(), Some(Ok(NaslValue::String("ngz".into()))));
+    }
+
+    #[test]
+    fn localtime() {
+        let code = r###"
+        a = localtime(1676900372, utc: TRUE);
+        b = localtime(1676900372, utc: FALSE);
+        c = localtime(utc: TRUE);
+        d = localtime(utc: FALSE);
+        "###;
+        let storage = DefaultSink::new(false);
+        let mut register = Register::default();
+        let loader = NoOpLoader::default();
+        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let mut parser =
+            parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
+
+        let offset = chrono::Local::now().offset().fix().local_minus_utc();
+        let date_a = parser.next();
+        assert!(matches!(date_a, Some(Ok(NaslValue::Dict(_)))));
+        match date_a.unwrap().unwrap() {
+            NaslValue::Dict(x) => {
+                assert_eq!(x["sec"], NaslValue::Number(32));
+                assert_eq!(x["min"], NaslValue::Number(39));
+                assert_eq!(x["hour"], NaslValue::Number(13));
+                assert_eq!(x["mday"], NaslValue::Number(20));
+                assert_eq!(x["mon"], NaslValue::Number(2));
+                assert_eq!(x["year"], NaslValue::Number(2023));
+                assert_eq!(x["wday"], NaslValue::Number(1));
+                assert_eq!(x["yday"], NaslValue::Number(51));
+                assert_eq!(x["isdst"], NaslValue::Number(0));
+            }
+            _ => panic!("NO DICT"),
+        }
+
+        let date_b = parser.next();
+        assert!(matches!(date_b, Some(Ok(NaslValue::Dict(_)))));
+        match date_b.unwrap().unwrap() {
+            NaslValue::Dict(x) => {
+                assert_eq!(x["sec"], NaslValue::Number(32));
+                assert_eq!(x["min"], NaslValue::Number(39));
+                assert_eq!(x["hour"], NaslValue::Number(13 + (offset / 3600) as i64));
+                assert_eq!(x["mday"], NaslValue::Number(20));
+                assert_eq!(x["mon"], NaslValue::Number(2));
+                assert_eq!(x["year"], NaslValue::Number(2023));
+                assert_eq!(x["wday"], NaslValue::Number(1));
+                assert_eq!(x["yday"], NaslValue::Number(51));
+                assert_eq!(x["isdst"], NaslValue::Number(0));
+            }
+            _ => panic!("NO DICT"),
+        }
+
+        let date_c = parser.next().unwrap().unwrap();
+        let date_d = parser.next().unwrap().unwrap();
+        let hour_c: i64;
+        let hour_d: i64;
+        let min_c: i64;
+        let min_d: i64;
+        match date_c {
+            NaslValue::Dict(x) => {
+                hour_c = i64::from(x["hour"].to_owned());
+                min_c = i64::from(x["min"].to_owned());
+            }
+            _ => panic!("NO DICT"),
+        }
+        match date_d {
+            NaslValue::Dict(x) => {
+                hour_d = i64::from(x["hour"].to_owned());
+                min_d = i64::from(x["min"].to_owned());
+            }
+            _ => panic!("NO DICT"),
+        }
+        assert_eq!(
+            hour_c * 60 + min_c,
+            hour_d * 60 + min_d - (offset / 60) as i64
+        );
+    }
+
+    #[test]
+    fn mktime() {
+        let code = r###"
+        mktime(sec: 01, min: 02, hour: 03, mday: 01, mon: 01, year: 1970);
+        "###;
+        let storage = DefaultSink::new(false);
+        let mut register = Register::default();
+        let loader = NoOpLoader::default();
+        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let mut parser =
+            parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
+        let offset = chrono::Local::now().offset().fix().local_minus_utc();
+        assert_eq!(
+            parser.next(),
+            Some(Ok(NaslValue::Number(10921 - offset as i64)))
+        );
+    }
+
+    #[test]
+    fn sleep() {
+        let code = r###"
+        sleep(1);
+        "###;
+        let storage = DefaultSink::new(false);
+        let mut register = Register::default();
+        let loader = NoOpLoader::default();
+        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let mut parser =
+            parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
+        let now = Instant::now();
+        parser.next();
+        assert!(now.elapsed().as_secs() >= 1);
+    }
+
+    #[test]
+    fn usleep() {
+        let code = r###"
+        usleep(1000);
+        "###;
+        let storage = DefaultSink::new(false);
+        let mut register = Register::default();
+        let loader = NoOpLoader::default();
+        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let mut parser =
+            parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
+        let now = Instant::now();
+        parser.next();
+        assert!(now.elapsed().as_micros() >= 1000);
     }
 }
