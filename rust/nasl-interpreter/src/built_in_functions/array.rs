@@ -9,9 +9,7 @@
 
 use std::collections::HashMap;
 
-use sink::Sink;
-
-use crate::{error::FunctionError, NaslFunction, NaslValue, Register};
+use crate::{error::FunctionErrorKind, Context, NaslFunction, NaslValue, Register};
 
 use super::resolve_positional_arguments;
 
@@ -20,7 +18,7 @@ use super::resolve_positional_arguments;
 /// Each uneven arguments out of positional arguments are used as keys while each even even argument is used a value.
 /// When there is an uneven number of elements the last key will be dropped, as there is no corresponding value.
 /// So `make_array(1, 0, 1)` will return the same response as `make_array(1, 0)`.
-pub fn make_array(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+pub fn make_array<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     let positional = resolve_positional_arguments(register);
     let mut values = HashMap::new();
     for (idx, val) in positional.iter().enumerate() {
@@ -32,42 +30,41 @@ pub fn make_array(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValu
 }
 
 /// NASL function to create a list out of a number of unnamed arguments
-fn nasl_make_list(register: &Register) -> Result<Vec<NaslValue>, FunctionError> {
+fn nasl_make_list(register: &Register) -> Result<Vec<NaslValue>, FunctionErrorKind> {
     let arr = resolve_positional_arguments(register);
     let mut values = Vec::<NaslValue>::new();
     for val in arr.iter() {
         match val {
             NaslValue::Dict(x) => values.extend(x.values().cloned().collect::<Vec<NaslValue>>()),
             NaslValue::Array(x) => values.extend(x.clone()),
-            NaslValue::Null => println!("{:?}", FunctionError::new("make_list", ("0", "NaslValue").into())),
-            x => values.push(x.clone())
+            NaslValue::Null => {}
+            x => values.push(x.clone()),
         }
     }
     Ok(values)
 }
 /// NASL function to create a list out of a number of unnamed arguments
-pub fn make_list(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+pub fn make_list<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     let values = nasl_make_list(register)?;
     Ok(NaslValue::Array(values))
 }
 
 /// NASL function to sorts the values of a dict/array. WARNING: drops the keys of a dict and returns an array.
-pub fn nasl_sort(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+pub fn nasl_sort<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     let mut values = nasl_make_list(register)?;
     values.sort();
     Ok(NaslValue::Array(values))
 }
 
 /// Returns an array with the keys of a dict
-pub fn keys(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+pub fn keys<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     let positional = resolve_positional_arguments(register);
     let mut keys = Vec::<NaslValue>::new();
     for val in positional.iter() {
         match val {
             NaslValue::Dict(x) => keys.extend(x.keys().map(|a| NaslValue::from(a.to_string()))),
-            NaslValue::Array(x) =>
-                keys.extend((0..(x.len() as i64)).map(NaslValue::from)),
-            _ => return Ok(NaslValue::Null)
+            NaslValue::Array(x) => keys.extend((0..(x.len() as i64)).map(NaslValue::from)),
+            _ => return Ok(NaslValue::Null),
         }
     }
 
@@ -75,12 +72,12 @@ pub fn keys(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, Fun
 }
 
 /// NASL function to return the length of an array|dict.
-pub fn max_index(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+pub fn max_index<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     let positional = register.positional();
     if positional.is_empty() {
-        return Ok(NaslValue::Null)
+        return Ok(NaslValue::Null);
     };
-    
+
     match &positional[0] {
         NaslValue::Dict(x) => Ok(NaslValue::Number(x.len() as i64)),
         NaslValue::Array(x) => Ok(NaslValue::Number(x.len() as i64)),
@@ -89,7 +86,7 @@ pub fn max_index(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue
 }
 
 /// Returns found function for key or None when not found
-pub fn lookup(key: &str) -> Option<NaslFunction> {
+pub fn lookup<K>(key: &str) -> Option<NaslFunction<K>> {
     match key {
         "make_array" => Some(make_array),
         "make_list" => Some(make_list),
@@ -102,12 +99,10 @@ pub fn lookup(key: &str) -> Option<NaslFunction> {
 
 #[cfg(test)]
 mod tests {
+    use nasl_syntax::parse;
     use std::collections::HashMap;
 
-    use nasl_syntax::parse;
-    use sink::DefaultSink;
-
-    use crate::{Interpreter, NaslValue, NoOpLoader, Register};
+    use crate::{DefaultContext, Interpreter, NaslValue, Register};
 
     macro_rules! make_dict {
         ($($key:expr => $val:expr),*) => {
@@ -133,10 +128,10 @@ mod tests {
         make_array(1);
         make_array();
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         assert_eq!(parser.next(), Some(Ok(make_dict!(1 => 0i64, 2 => 1i64))));
@@ -156,31 +151,52 @@ mod tests {
         make_list(1, 0, b);
         make_list(1, 0, a);
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
-        assert_eq!(parser.next(),
-                   Some(Ok(NaslValue::Array(vec![NaslValue::Number(2),NaslValue::Number(4)]))));
-        assert_eq!(parser.next(),
-                   Some(Ok(NaslValue::Array(vec![NaslValue::Number(1),NaslValue::Number(0)]))));
+        assert_eq!(
+            parser.next(),
+            Some(Ok(NaslValue::Array(vec![
+                NaslValue::Number(2),
+                NaslValue::Number(4)
+            ])))
+        );
+        assert_eq!(
+            parser.next(),
+            Some(Ok(NaslValue::Array(vec![
+                NaslValue::Number(1),
+                NaslValue::Number(0)
+            ])))
+        );
         assert_eq!(parser.next(), Some(Ok(NaslValue::Array([].into()))));
-        assert_eq!(parser.next(),
-                   Some(Ok(NaslValue::Array(vec![NaslValue::Number(1),NaslValue::Number(2)]))));
+        assert_eq!(
+            parser.next(),
+            Some(Ok(NaslValue::Array(vec![
+                NaslValue::Number(1),
+                NaslValue::Number(2)
+            ])))
+        );
         parser.next();
-        assert_eq!(parser.next(),
-                   Some(Ok(NaslValue::Array(vec![
-                       NaslValue::Number(1),
-                       NaslValue::Number(0),
-                       NaslValue::Number(6)]))));
-        assert_eq!(parser.next(),
-                   Some(Ok(NaslValue::Array(vec![
-                       NaslValue::Number(1),
-                       NaslValue::Number(0),
-                       NaslValue::Number(2),
-                       NaslValue::Number(4)]))));
+        assert_eq!(
+            parser.next(),
+            Some(Ok(NaslValue::Array(vec![
+                NaslValue::Number(1),
+                NaslValue::Number(0),
+                NaslValue::Number(6)
+            ])))
+        );
+        assert_eq!(
+            parser.next(),
+            Some(Ok(NaslValue::Array(vec![
+                NaslValue::Number(1),
+                NaslValue::Number(0),
+                NaslValue::Number(2),
+                NaslValue::Number(4)
+            ])))
+        );
     }
 
     #[test]
@@ -190,22 +206,23 @@ mod tests {
         l = make_list("abbb", 1, "aaaa", 0, a);
         s = sort(l);
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         parser.next();
         parser.next();
         let a = parser.next();
         let b = Some(Ok(NaslValue::Array(vec![
-                       NaslValue::Number(0),
-                       NaslValue::Number(1),
-                       NaslValue::Number(6),
-                       NaslValue::Number(8),
-                       NaslValue::String("aaaa".to_string()),
-                       NaslValue::String("abbb".to_string())])));
+            NaslValue::Number(0),
+            NaslValue::Number(1),
+            NaslValue::Number(6),
+            NaslValue::Number(8),
+            NaslValue::String("aaaa".to_string()),
+            NaslValue::String("abbb".to_string()),
+        ])));
         assert_eq!(a, b);
     }
 
@@ -216,19 +233,20 @@ mod tests {
         l = make_list("foo", "bar");
         keys(a,l);
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         parser.next();
         parser.next();
         let a = parser.next();
         let b = Some(Ok(NaslValue::Array(vec![
-                       NaslValue::String("a".to_string()),
-                       NaslValue::Number(0),
-                       NaslValue::Number(1)])));
+            NaslValue::String("a".to_string()),
+            NaslValue::Number(0),
+            NaslValue::Number(1),
+        ])));
 
         assert_eq!(a, b);
     }
@@ -242,10 +260,10 @@ mod tests {
         max_index(make_list(1, 0));
         max_index(make_list());
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         parser.next();
@@ -254,5 +272,4 @@ mod tests {
         assert_eq!(parser.next(), Some(Ok(NaslValue::Number(2))));
         assert_eq!(parser.next(), Some(Ok(NaslValue::Number(0))));
     }
-
 }

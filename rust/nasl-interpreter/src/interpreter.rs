@@ -2,27 +2,26 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+use std::{collections::HashMap, io};
+
 use nasl_syntax::{IdentifierType, Statement, Statement::*, Token, TokenCategory};
-use sink::Sink;
+use storage::StorageError;
 
 use crate::{
     assign::AssignExtension,
     call::CallExtension,
-    context::{ContextType, Register},
+    context::{Context, ContextType, Register},
     declare::{DeclareFunctionExtension, DeclareVariableExtension},
     include::IncludeExtension,
-    loader::Loader,
     loop_extension::LoopExtension,
     operator::OperatorExtension,
-    InterpretError, NaslValue,
+    InterpretError, InterpretErrorKind, LoadError, NaslValue,
 };
 
 /// Used to interpret a Statement
-pub struct Interpreter<'a> {
-    pub(crate) key: &'a str,
+pub struct Interpreter<'a, K> {
     pub(crate) registrat: &'a mut Register,
-    pub(crate) storage: &'a dyn Sink,
-    pub(crate) loader: &'a dyn Loader,
+    pub(crate) ctxconfigs: &'a Context<'a, K>,
 }
 
 /// Interpreter always returns a NaslValue or an InterpretError
@@ -30,19 +29,15 @@ pub struct Interpreter<'a> {
 /// When a result does not contain a value than NaslValue::Null must be returned.
 pub type InterpretResult = Result<NaslValue, InterpretError>;
 
-impl<'a> Interpreter<'a> {
+impl<'a, K> Interpreter<'a, K>
+where
+    K: AsRef<str>,
+{
     /// Creates a new Interpreter.
-    pub fn new(
-        key: &'a str,
-        storage: &'a dyn Sink,
-        loader: &'a dyn Loader,
-        register: &'a mut Register,
-    ) -> Self {
+    pub fn new(register: &'a mut Register, ctxconfigs: &'a Context<K>) -> Self {
         Interpreter {
-            key,
             registrat: register,
-            storage,
-            loader,
+            ctxconfigs,
         }
     }
 
@@ -50,6 +45,36 @@ impl<'a> Interpreter<'a> {
         match token.category() {
             TokenCategory::Identifier(IdentifierType::Undefined(x)) => Ok(x.to_owned()),
             cat => Err(InterpretError::wrong_category(cat)),
+        }
+    }
+
+    /// Tries to interpret a statement and retries n times on a retry error
+    ///
+    /// When encountering a retrievable error:
+    /// - LoadError(Retry(_))
+    /// - StorageError(Retry(_))
+    /// - IOError(Interrupted(_))
+    ///
+    /// then it retries the statement for a given max_attempts times.
+    ///
+    /// When max_attempts is set to 0 it will it execute it once.
+    pub fn retry_resolve(&mut self, stmt: &Statement, max_attempts: usize) -> InterpretResult {
+        match self.resolve(stmt) {
+            Ok(x) => Ok(x),
+            Err(e) => {
+                if max_attempts > 0 {
+                    match e.kind {
+                        InterpretErrorKind::LoadError(LoadError::Retry(_))
+                        | InterpretErrorKind::IOError(io::ErrorKind::Interrupted)
+                        | InterpretErrorKind::StorageError(StorageError::Retry(_)) => {
+                            self.retry_resolve(stmt, max_attempts - 1)
+                        }
+                        _ => Err(e),
+                    }
+                } else {
+                    Err(e)
+                }
+            }
         }
     }
 
@@ -132,23 +157,33 @@ impl<'a> Interpreter<'a> {
                 Ok(value) => {
                     if bool::from(value) {
                         return self.resolve(if_block);
-                    } else if else_block.is_some() {
-                        return self.resolve(else_block.as_ref().unwrap());
+                    } else if let Some(else_block) = else_block {
+                        return self.resolve(else_block.as_ref());
                     }
                     Ok(NaslValue::Null)
                 }
                 Err(err) => Err(err),
             },
             Block(blocks) => {
+                self.registrat.create_child(HashMap::default());
                 for stmt in blocks {
-                    match self.resolve(stmt)? {
-                        NaslValue::Exit(rc) => return Ok(NaslValue::Exit(rc)),
-                        NaslValue::Return(rc) => return Ok(NaslValue::Return(rc)),
-                        NaslValue::Break => return Ok(NaslValue::Break),
-                        NaslValue::Continue => return Ok(NaslValue::Continue),
-                        _ => {}
+                    match self.resolve(stmt) {
+                        Ok(x) => {
+                            if matches!(
+                                x,
+                                NaslValue::Exit(_)
+                                    | NaslValue::Return(_)
+                                    | NaslValue::Break
+                                    | NaslValue::Continue
+                            ) {
+                                self.registrat.drop_last();
+                                return Ok(x);
+                            }
+                        }
+                        Err(e) => return Err(e),
                     }
                 }
+                self.registrat.drop_last();
                 // currently blocks don't return something
                 Ok(NaslValue::Null)
             }

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-//! nasl_syntax is a library to parse nasl scripts to statements for further usage.
+#![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 mod cursor;
 mod error;
@@ -19,8 +19,8 @@ mod variable_extension;
 
 pub use error::{ErrorKind, SyntaxError};
 pub use lexer::Lexer;
-pub use sink::nvt::ACT;
 pub use statement::*;
+pub use storage::nvt::ACT;
 pub use token::Base as NumberBase;
 pub use token::Category as TokenCategory;
 pub use token::IdentifierType;

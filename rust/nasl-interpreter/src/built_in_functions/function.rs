@@ -4,9 +4,7 @@
 
 //! Defines various built-in functions for NASL functions.
 
-use sink::Sink;
-
-use crate::{error::FunctionError, ContextType, NaslFunction, NaslValue, Register};
+use crate::{error::FunctionErrorKind, Context, ContextType, NaslFunction, NaslValue, Register};
 
 use super::resolve_positional_arguments;
 
@@ -15,17 +13,16 @@ use super::resolve_positional_arguments;
 /// Uses the first positional argument to verify if a function is defined.
 /// This argument must be a string everything else will return False per default.
 /// Returns NaslValue::Boolean(true) when defined NaslValue::Boolean(false) otherwise.
-pub fn defined_func(
-    _: &str,
-    _: &dyn Sink,
-    register: &Register,
-) -> Result<NaslValue, FunctionError> {
+pub fn defined_func<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind>
+where
+    K: AsRef<str>,
+{
     let positional = resolve_positional_arguments(register);
 
     Ok(match positional.get(0) {
         Some(NaslValue::String(x)) => match register.named(x) {
             Some(ContextType::Function(_, _)) => true.into(),
-            None => crate::lookup(x).is_some().into(),
+            None => crate::lookup::<K>(x).is_some().into(),
             _ => false.into(),
         },
         _ => false.into(),
@@ -33,7 +30,10 @@ pub fn defined_func(
 }
 
 /// Returns found function for key or None when not found
-pub fn lookup(key: &str) -> Option<NaslFunction> {
+pub fn lookup<K>(key: &str) -> Option<NaslFunction<K>>
+where
+    K: AsRef<str>,
+{
     match key {
         "defined_func" => Some(defined_func),
         _ => None,
@@ -43,9 +43,8 @@ pub fn lookup(key: &str) -> Option<NaslFunction> {
 #[cfg(test)]
 mod tests {
     use nasl_syntax::parse;
-    use sink::DefaultSink;
 
-    use crate::{Interpreter, NaslValue, NoOpLoader, Register};
+    use crate::{DefaultContext, Interpreter, NaslValue, Register};
 
     #[test]
     fn defined_func() {
@@ -57,10 +56,10 @@ mod tests {
         defined_func("a");
         defined_func(a);
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         assert_eq!(parser.next(), Some(Ok(NaslValue::Null))); // defining function b

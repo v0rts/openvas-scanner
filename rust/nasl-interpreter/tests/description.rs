@@ -17,17 +17,17 @@ impl Loader for NoOpLoader {
 #[cfg(test)]
 mod tests {
 
-    use nasl_interpreter::{ContextType, InterpretError, NaslValue};
-    use nasl_interpreter::{Interpreter, Register};
+    use nasl_interpreter::{Context, Interpreter, Register};
+    use nasl_interpreter::{ContextType, DefaultLogger, InterpretError, NaslValue};
 
     use nasl_syntax::parse;
-    use sink::nvt::NvtRef;
-    use sink::nvt::TagKey::*;
-    use sink::nvt::ACT::*;
-    use sink::nvt::{NVTField::*, NvtPreference, PreferenceType};
-    use sink::DefaultSink;
-    use sink::Dispatch::NVT;
-    use sink::Sink;
+    use storage::nvt::TagKey::*;
+    use storage::nvt::ACT::*;
+    use storage::nvt::{NVTField::*, NvtPreference, PreferenceType};
+    use storage::nvt::{NvtRef, TagValue};
+    use storage::DefaultDispatcher;
+    use storage::Field::NVT;
+    use storage::Retriever;
 
     use crate::NoOpLoader;
 
@@ -57,21 +57,17 @@ if(description)
   exit(rc);
 }
         "###;
-        let storage = DefaultSink::new(true);
+        let storage = DefaultDispatcher::new(true);
         let loader = NoOpLoader::default();
-        let key = "test.nasl";
         let initial = [(
             "description".to_owned(),
             ContextType::Value(NaslValue::Number(1)),
         )];
-        storage
-            .dispatch(
-                key,
-                sink::Dispatch::NVT(sink::nvt::NVTField::FileName(key.to_owned())),
-            )
-            .expect("storage should work");
         let mut register = Register::root_initial(&initial);
-        let mut interpreter = Interpreter::new(key, &storage, &loader, &mut register);
+        let logger = DefaultLogger::default();
+        let key = "test.nasl".to_owned();
+        let ctxconfigs = Context::new(&key, &storage, &storage, &loader, &logger);
+        let mut interpreter = Interpreter::new(&mut register, &ctxconfigs);
         let results = parse(code)
             .map(|stmt| match stmt {
                 Ok(stmt) => interpreter.resolve(&stmt),
@@ -82,17 +78,14 @@ if(description)
             .unwrap_or(Ok(NaslValue::Exit(0)));
         assert_eq!(results, Ok(NaslValue::Exit(23)));
         assert_eq!(
-            &storage
-                .retrieve("test.nasl", sink::Retrieve::NVT(None))
+            storage
+                .retrieve(&key, &storage::Retrieve::NVT(None))
                 .unwrap(),
-            &vec![
-                NVT(FileName("test.nasl".to_owned())),
+            vec![
                 NVT(Oid("0.0.0.0.0.0.0.0.0.1".to_owned())),
+                NVT(FileName(key)),
                 NVT(NoOp),
-                NVT(Tag(
-                    CreationDate,
-                    "2013-04-16 11:21:21 +0530 (Tue, 16 Apr 2013)".to_owned()
-                )),
+                NVT(Tag(CreationDate, TagValue::Number(1366091481))),
                 NVT(Name("that is a very long and descriptive name".to_owned())),
                 NVT(Category(Denial)),
                 NVT(NoOp),
@@ -109,7 +102,6 @@ if(description)
                 NVT(Reference(vec![NvtRef {
                     class: "http://freshmeat.sourceforge.net/projects/eventh/".to_owned(),
                     id: "URL".to_owned(),
-                    text: None
                 }])),
                 NVT(ExcludedKeys(vec![
                     "Settings/disable_cgi_scanning".to_owned(),
@@ -122,7 +114,6 @@ if(description)
                 NVT(Reference(vec![NvtRef {
                     class: "cve".to_owned(),
                     id: "CVE-1999-0524".to_owned(),
-                    text: None
                 }])),
                 NVT(RequiredKeys(vec!["WMI/Apache/RootPath".to_owned()])),
                 NVT(Preference(NvtPreference {

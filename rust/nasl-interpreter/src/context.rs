@@ -3,13 +3,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 use nasl_syntax::Statement;
+use storage::{DefaultDispatcher, Dispatcher, Retriever};
 
-use crate::{
-    error::InterpretError,
-    logger::{DefaultLogger, NaslLogger},
-    lookup_keys::FC_ANON_ARGS,
-    NaslValue,
-};
+use crate::{logger::NaslLogger, lookup_keys::FC_ANON_ARGS, Loader, NaslValue};
 
 /// Contexts are responsible to locate, add and delete everything that is declared within a NASL plugin
 
@@ -91,7 +87,6 @@ impl From<HashMap<String, NaslValue>> for ContextType {
 /// deleted by calling drop_last when the context runs out of scope.
 pub struct Register {
     blocks: Vec<NaslContext>,
-    logger: Box<dyn NaslLogger>,
 }
 
 impl Register {
@@ -99,7 +94,6 @@ impl Register {
     pub fn new() -> Self {
         Self {
             blocks: vec![NaslContext::default()],
-            logger: Box::new(DefaultLogger::new()),
         }
     }
 
@@ -113,20 +107,7 @@ impl Register {
             defined,
             ..Default::default()
         };
-        Self {
-            blocks: vec![root],
-            logger: Box::<DefaultLogger>::default(),
-        }
-    }
-
-    /// Get the logger to print messages
-    pub fn logger(&self) -> &dyn NaslLogger {
-        &*self.logger
-    }
-
-    /// Set a new logger
-    pub fn set_logger(&mut self, logger: Box<dyn NaslLogger>) {
-        self.logger = logger;
+        Self { blocks: vec![root] }
     }
 
     /// Returns the next index
@@ -134,54 +115,41 @@ impl Register {
         self.blocks.len()
     }
 
-    /// Creates a child context
-    pub fn create_child(&mut self, parent: &NaslContext, defined: Named) -> &NaslContext {
+    /// Creates a child context using the last context as a parent
+    pub fn create_child(&mut self, defined: Named) {
+        let parent_id = self.blocks.last().map(|x| x.id).unwrap_or_default();
         let result = NaslContext {
-            parent: Some(parent.id),
+            parent: Some(parent_id),
             id: self.index(),
             defined,
         };
         self.blocks.push(result);
-        return self.blocks.last_mut().unwrap();
     }
 
     /// Creates a child context for the root context.
     ///
     /// This is used to function calls to prevent that the called function can access the
     /// context of the caller.
-    pub fn create_root_child(&mut self, defined: Named) -> &NaslContext {
+    pub fn create_root_child(&mut self, defined: Named) {
         let result = NaslContext {
             parent: Some(0),
             id: self.index(),
             defined,
         };
         self.blocks.push(result);
-        return self.blocks.last_mut().unwrap();
-    }
-
-    /// Returns the last created context.
-    ///
-    /// The idea is that since NASL is an iterative language the last context is also the current
-    /// one.
-    fn last(&self) -> &NaslContext {
-        let last = self.blocks.last();
-        last.unwrap()
     }
 
     /// Finds a named ContextType
     pub fn named<'a>(&'a self, name: &'a str) -> Option<&ContextType> {
-        self.last().named(self, name).map(|(_, val)| val)
+        self.blocks
+            .last()
+            .and_then(|x| x.named(self, name))
+            .map(|(_, val)| val)
     }
 
     /// Finds a named ContextType with index
     pub fn index_named<'a>(&'a self, name: &'a str) -> Option<(usize, &ContextType)> {
-        self.last().named(self, name)
-    }
-
-    /// Returns a mutable reference of the current context
-    pub fn last_mut(&mut self) -> &mut NaslContext {
-        let last = self.blocks.last_mut();
-        last.unwrap()
+        self.blocks.last().and_then(|x| x.named(self, name))
     }
 
     /// Adds a named parameter to the root context
@@ -191,24 +159,19 @@ impl Register {
     }
 
     /// Adds a named parameter to the root context
-    pub fn add_to_index(
-        &mut self,
-        idx: usize,
-        name: &str,
-        value: ContextType,
-    ) -> Result<(), InterpretError> {
+    pub fn add_to_index(&mut self, idx: usize, name: &str, value: ContextType) {
         if idx >= self.blocks.len() {
             panic!("The given index should be retrieved by named_value. Therefore this should not happen.");
         } else {
             let global = &mut self.blocks[idx];
             global.add_named(name, value);
-            Ok(())
         }
     }
     /// Adds a named parameter to the last context
     pub fn add_local(&mut self, name: &str, value: ContextType) {
-        let last = &mut self.last_mut();
-        last.add_named(name, value);
+        if let Some(last) = self.blocks.last_mut() {
+            last.add_named(name, value);
+        }
     }
 
     /// Retrieves all positional definitions
@@ -269,6 +232,88 @@ impl NaslContext {
                 Some(parent) => registrat.blocks[parent].named(registrat, name),
                 None => None,
             },
+        }
+    }
+}
+
+/// Configurations
+///
+/// This struct includes all objects that a nasl function requires.
+/// New objects must be added here in
+pub struct Context<'a, K> {
+    /// key for this context. A name or an OID
+    key: &'a K,
+    /// Default Dispatcher
+    dispatcher: &'a dyn Dispatcher<K>,
+    /// Default Retriever
+    retriever: &'a dyn Retriever<K>,
+    /// Default Loader
+    loader: &'a dyn Loader,
+    /// Default logger.
+    logger: &'a dyn NaslLogger,
+}
+
+impl<'a, K> Context<'a, K> {
+    /// Creates an empty configuration
+    pub fn new(
+        key: &'a K,
+        dispatcher: &'a dyn Dispatcher<K>,
+        retriever: &'a dyn Retriever<K>,
+        loader: &'a dyn Loader,
+        logger: &'a dyn NaslLogger,
+    ) -> Self {
+        Self {
+            key,
+            dispatcher,
+            retriever,
+            loader,
+            logger,
+        }
+    }
+
+    /// Get the logger to print messages
+    pub fn logger(&self) -> &dyn NaslLogger {
+        self.logger
+    }
+    /// Get the Key
+    pub fn key(&self) -> &K {
+        self.key
+    }
+    /// Get the storage
+    pub fn dispatcher(&self) -> &dyn Dispatcher<K> {
+        self.dispatcher
+    }
+    /// Get the storage
+    pub fn retriever(&self) -> &dyn Retriever<K> {
+        self.retriever
+    }
+    /// Get the loader
+    pub fn loader(&self) -> &dyn Loader {
+        self.loader
+    }
+}
+/// Can be used as DefaultContext::default().as_context() within tests
+#[derive(Default)]
+pub struct DefaultContext {
+    /// key for the default context. A name or an OID
+    pub key: String,
+    /// Default Storage
+    pub dispatcher: Box<DefaultDispatcher<String>>,
+    /// Default Loader
+    pub loader: Box<dyn Loader>,
+    /// Default logger
+    pub logger: Box<dyn NaslLogger>,
+}
+
+impl DefaultContext {
+    /// Converts a DefaultContext to Context
+    pub fn as_context(&self) -> Context<String> {
+        Context {
+            key: &self.key,
+            dispatcher: &*self.dispatcher,
+            retriever: &*self.dispatcher,
+            loader: &*self.loader,
+            logger: self.logger.as_ref(),
         }
     }
 }

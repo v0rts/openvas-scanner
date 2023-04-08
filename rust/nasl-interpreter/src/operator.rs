@@ -13,7 +13,10 @@ pub(crate) trait OperatorExtension {
     fn operator(&mut self, category: &TokenCategory, stmts: &[Statement]) -> InterpretResult;
 }
 
-impl<'a> Interpreter<'a> {
+impl<'a, K> Interpreter<'a, K>
+where
+    K: AsRef<str>,
+{
     fn execute(
         &mut self,
         stmts: &[Statement],
@@ -76,7 +79,10 @@ fn not_match_regex(a: NaslValue, matches: Option<NaslValue>) -> InterpretResult 
     Ok(NaslValue::Boolean(!bool::from(result)))
 }
 
-impl<'a> OperatorExtension for Interpreter<'a> {
+impl<'a, K> OperatorExtension for Interpreter<'a, K>
+where
+    K: AsRef<str>,
+{
     fn operator(&mut self, category: &TokenCategory, stmts: &[Statement]) -> InterpretResult {
         match category {
             // number and string
@@ -210,10 +216,9 @@ impl<'a> OperatorExtension for Interpreter<'a> {
 #[cfg(test)]
 mod tests {
     use nasl_syntax::parse;
-    use sink::DefaultSink;
 
+    use crate::{DefaultContext, Register};
     use crate::{Interpreter, NaslValue};
-    use crate::{NoOpLoader, Register};
 
     macro_rules! create_test {
         ($($name:tt: $code:expr => $result:expr),*) => {
@@ -221,10 +226,10 @@ mod tests {
         $(
             #[test]
             fn $name() {
-                let storage = DefaultSink::new(false);
                 let mut register = Register::default();
-                let loader = NoOpLoader::default();
-                let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+                let binding = DefaultContext::default();
+                let context = binding.as_context();
+                let mut interpreter = Interpreter::new(&mut register, &context);
                 let mut parser = parse($code).map(|x|
                     interpreter.resolve(&x.expect("unexpected parse error"))
                 );

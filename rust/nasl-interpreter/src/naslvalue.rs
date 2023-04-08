@@ -1,12 +1,11 @@
-use std::{collections::HashMap, fmt::Display, cmp::Ordering};
+use std::{cmp::Ordering, collections::HashMap, fmt::Display};
 
 use nasl_syntax::{IdentifierType, Token, TokenCategory, ACT};
 
 use crate::InterpretError;
 
-
 /// Represents a valid Value of NASL
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub enum NaslValue {
     /// String value
     String(String),
@@ -23,6 +22,7 @@ pub enum NaslValue {
     /// Attack category keyword
     AttackCategory(ACT),
     /// Null value
+    #[default]
     Null,
     /// Returns value of the context
     Return(Box<NaslValue>),
@@ -33,7 +33,23 @@ pub enum NaslValue {
     /// Exit value of the script
     Exit(i64),
 }
-    
+
+impl NaslValue {
+    /// Transform NASLValue to storage::types::Primitive
+    pub fn as_primitive(self) -> storage::types::Primitive {
+        use storage::types::Primitive::*;
+        match self {
+            Self::String(s) => String(s),
+            Self::Data(x) => Data(x),
+            Self::Number(x) => Number(x),
+            Self::Array(x) => Array(x.into_iter().map(|x| x.as_primitive()).collect()),
+            Self::Dict(x) => Dict(x.into_iter().map(|(k, v)| (k, v.as_primitive())).collect()),
+            Self::Boolean(x) => Boolean(x),
+            _ => Null,
+        }
+    }
+}
+
 impl PartialOrd for NaslValue {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         let a: Vec<u8> = self.into();
@@ -78,7 +94,7 @@ impl Display for NaslValue {
             NaslValue::Null => write!(f, "\0"),
             NaslValue::Exit(rc) => write!(f, "exit({})", rc),
             NaslValue::AttackCategory(category) => {
-                write!(f, "{}", IdentifierType::ACT(*category).to_string())
+                write!(f, "{}", IdentifierType::ACT(*category))
             }
             NaslValue::Return(rc) => write!(f, "return({:?})", *rc),
             NaslValue::Continue => write!(f, "continue"),
@@ -224,6 +240,21 @@ impl From<NaslValue> for Vec<NaslValue> {
                 .map(|x| NaslValue::String(x.to_string()))
                 .collect(),
             _ => vec![],
+        }
+    }
+}
+
+impl From<storage::types::Primitive> for NaslValue {
+    fn from(value: storage::types::Primitive) -> Self {
+        use storage::types::Primitive::*;
+        match value {
+            String(x) => Self::String(x),
+            Data(x) => Self::Data(x),
+            Number(x) => Self::Number(x),
+            Array(x) => Self::Array(x.into_iter().map(Self::from).collect()),
+            Dict(x) => Self::Dict(x.into_iter().map(|(k, v)| (k, Self::from(v))).collect()),
+            Boolean(x) => Self::Boolean(x),
+            Null => todo!(),
         }
     }
 }

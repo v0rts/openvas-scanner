@@ -5,13 +5,14 @@
 use std::str::FromStr;
 
 use crate::{
-    context::{ContextType, Register},
+    context::{Context, Register},
     error::FunctionErrorKind,
-    FunctionError, NaslFunction, NaslValue,
+    NaslFunction, NaslValue,
 };
 
-use sink::nvt::{NVTField, NvtPreference, NvtRef, PreferenceType, TagKey};
-use sink::Sink;
+use storage::nvt::{NVTField, NvtPreference, NvtRef, PreferenceType, TagKey, TagValue};
+
+use super::get_named_parameter;
 
 /// Makes a storage function based on a very small DSL.
 ///
@@ -25,7 +26,7 @@ use sink::Sink;
 ///}
 /// ````
 /// The first parameter is the name of the function as well as the &str lookup key.
-/// Afterwards a method that transform `&[&NaslValue]` to `Result<NVTField, FunctionError>` must be defined.
+/// Afterwards a method that transform `&[&NaslValue]` to `Result<NVTField, FunctionErrorKind>` must be defined.
 ///
 /// Parameter are separated from the definition by a `=>`.
 ///
@@ -56,19 +57,17 @@ macro_rules! make_storage_function {
         )?
         ///
         /// Returns NaslValue::Null on success.
-        pub fn $name(
-            key: &str,
-            storage: &dyn Sink,
+        pub fn $name<K>(
             registrat: &Register,
-        ) -> Result<NaslValue, FunctionError> {
+            ctxconfigs: &Context<K>,
+        ) -> Result<NaslValue, FunctionErrorKind> where K: AsRef<str> {
             let mut variables = vec![];
             $(
             let positional = registrat.positional();
             if $len > 0 && positional.len() != $len{
-                return Err(FunctionError::new(
-                    stringify!($name),
-                    FunctionErrorKind::MissingPositionalArguments { expected: $len, got: positional.len() },
-                ));
+                return Err(
+                    FunctionErrorKind::MissingPositionalArguments { expected: $len, got: positional.len() }
+                );
             }
             for p in positional {
                 variables.push(p);
@@ -76,25 +75,27 @@ macro_rules! make_storage_function {
             )?
             $(
             $(
-            let value = get_named_parameter(stringify!($name), registrat, stringify!($value), true)?;
+            let value = get_named_parameter(registrat, stringify!($value), true)?;
             variables.push(value);
             )+
             )?
             $(
             $(
-            let value = get_named_parameter(stringify!($name), registrat, stringify!($optional_value), false)?;
+            let value = get_named_parameter(registrat, stringify!($optional_value), false)?;
             if !matches!(value, &NaslValue::Exit(0)) {
                variables.push(value);
             }
             )+
             )?
-            let db_arg = $transform(&variables)?;
-            storage.dispatch(key, sink::Dispatch::NVT(db_arg))?;
+            let db_args = $transform(ctxconfigs.key(), &variables)?;
+            for db_arg in db_args {
+              ctxconfigs.dispatcher().dispatch(ctxconfigs.key(), storage::Field::NVT(db_arg))?;
+            }
             Ok(NaslValue::Null)
         }
         )*
         /// Returns found function for key or None when not found
-        pub fn lookup(key: &str) -> Option<NaslFunction> {
+        pub fn lookup<K>(key: &str) -> Option<NaslFunction<K>> where K: AsRef<str> {
             match key {
                 $(
                 stringify!($name) => Some($name),
@@ -105,81 +106,57 @@ macro_rules! make_storage_function {
     };
 }
 
-fn get_named_parameter<'a>(
-    function: &'a str,
-    registrat: &'a Register,
-    key: &'a str,
-    required: bool,
-) -> Result<&'a NaslValue, FunctionError> {
-    match registrat.named(key) {
-        None => {
-            if required {
-                Err(FunctionError::new(
-                    function,
-                    FunctionErrorKind::MissingArguments(vec![key.to_owned()]),
-                ))
-            } else {
-                Ok(&NaslValue::Exit(0))
-            }
-        }
-        Some(ct) => match ct {
-            ContextType::Value(value) => Ok(value),
-            _ => Err(FunctionError::new(
-                function,
-                (key, "value", "function").into(),
-            )),
-        },
-    }
-}
+type Transform = Result<Vec<NVTField>, FunctionErrorKind>;
 
-type Transform = Result<NVTField, FunctionError>;
-
-fn as_timeout_field(arguments: &[&NaslValue]) -> Transform {
-    Ok(NVTField::Preference(NvtPreference {
+fn as_timeout_field<K>(_: &K, arguments: &[&NaslValue]) -> Transform {
+    Ok(vec![NVTField::Preference(NvtPreference {
         id: Some(0),
         name: "timeout".to_owned(),
         class: PreferenceType::Entry,
         default: arguments[0].to_string(),
-    }))
+    })])
 }
 
-fn as_category_field(arguments: &[&NaslValue]) -> Transform {
+fn as_category_field<K>(_: &K, arguments: &[&NaslValue]) -> Transform {
     match arguments[0] {
-        NaslValue::AttackCategory(cat) => Ok(NVTField::Category(*cat)),
-        a => Err(FunctionError::new(
-            "script_category",
-            ("AttackCategory", a).into(),
-        )),
+        NaslValue::AttackCategory(cat) => Ok(vec![NVTField::Category(*cat)]),
+        a => Err(("AttackCategory", a).into()),
     }
 }
 
-fn as_name_field(arguments: &[&NaslValue]) -> Transform {
-    Ok(NVTField::Name(arguments[0].to_string()))
+fn as_name_field<K>(_: &K, arguments: &[&NaslValue]) -> Transform {
+    Ok(vec![NVTField::Name(arguments[0].to_string())])
 }
 
-fn as_oid_field(arguments: &[&NaslValue]) -> Transform {
-    Ok(NVTField::Oid(arguments[0].to_string()))
+fn as_oid_field<K>(key: &K, arguments: &[&NaslValue]) -> Transform
+where
+    K: AsRef<str>,
+{
+    Ok(vec![
+        NVTField::Oid(arguments[0].to_string()),
+        NVTField::FileName(key.as_ref().to_owned()),
+    ])
 }
 
-fn as_family_field(arguments: &[&NaslValue]) -> Transform {
-    Ok(NVTField::Family(arguments[0].to_string()))
+fn as_family_field<K>(_: &K, arguments: &[&NaslValue]) -> Transform {
+    Ok(vec![NVTField::Family(arguments[0].to_string())])
 }
 
-fn as_noop(_arguments: &[&NaslValue]) -> Transform {
-    Ok(NVTField::NoOp)
+fn as_noop<K>(_: &K, _arguments: &[&NaslValue]) -> Transform {
+    Ok(vec![NVTField::NoOp])
 }
 
-fn as_dependencies_field(arguments: &[&NaslValue]) -> Transform {
+fn as_dependencies_field<K>(_: &K, arguments: &[&NaslValue]) -> Transform {
     let values: Vec<String> = arguments.iter().map(|x| x.to_string()).collect();
-    Ok(NVTField::Dependencies(values))
+    Ok(vec![NVTField::Dependencies(values)])
 }
 
-fn as_exclude_keys_field(arguments: &[&NaslValue]) -> Transform {
+fn as_exclude_keys_field<K>(_: &K, arguments: &[&NaslValue]) -> Transform {
     let values: Vec<String> = arguments.iter().map(|x| x.to_string()).collect();
-    Ok(NVTField::ExcludedKeys(values))
+    Ok(vec![NVTField::ExcludedKeys(values)])
 }
 
-fn as_mandatory_keys_field(arguments: &[&NaslValue]) -> Transform {
+fn as_mandatory_keys_field<K>(_: &K, arguments: &[&NaslValue]) -> Transform {
     let values: Vec<String> = arguments.iter().map(|x| x.to_string()).collect();
     match values.clone().last().and_then(|x| x.rsplit_once('=')) {
         Some((remove, _)) => {
@@ -187,60 +164,62 @@ fn as_mandatory_keys_field(arguments: &[&NaslValue]) -> Transform {
                 .into_iter()
                 .filter(|x| !x.starts_with(remove) || x.contains('='))
                 .collect();
-            Ok(NVTField::MandatoryKeys(values))
+            Ok(vec![NVTField::MandatoryKeys(values)])
         }
-        None => Ok(NVTField::MandatoryKeys(values)),
+        None => Ok(vec![NVTField::MandatoryKeys(values)]),
     }
 }
 
-fn as_require_ports_field(arguments: &[&NaslValue]) -> Transform {
+fn as_require_ports_field<K>(_: &K, arguments: &[&NaslValue]) -> Transform {
     let values: Vec<String> = arguments.iter().map(|x| x.to_string()).collect();
-    Ok(NVTField::RequiredPorts(values))
+    Ok(vec![NVTField::RequiredPorts(values)])
 }
 
-fn as_require_udp_ports_field(arguments: &[&NaslValue]) -> Transform {
+fn as_require_udp_ports_field<K>(_: &K, arguments: &[&NaslValue]) -> Transform {
     let values: Vec<String> = arguments.iter().map(|x| x.to_string()).collect();
-    Ok(NVTField::RequiredUdpPorts(values))
+    Ok(vec![NVTField::RequiredUdpPorts(values)])
 }
 
-fn as_require_keys_field(arguments: &[&NaslValue]) -> Transform {
+fn as_require_keys_field<K>(_: &K, arguments: &[&NaslValue]) -> Transform {
     let values: Vec<String> = arguments.iter().map(|x| x.to_string()).collect();
-    Ok(NVTField::RequiredKeys(values))
+    Ok(vec![NVTField::RequiredKeys(values)])
 }
 
-fn as_cve_field(arguments: &[&NaslValue]) -> Transform {
+fn as_cve_field<K>(_: &K, arguments: &[&NaslValue]) -> Transform {
     let result = arguments
         .iter()
         .map(|x| ("cve", x.to_string()).into())
         .collect();
-    Ok(NVTField::Reference(result))
+    Ok(vec![NVTField::Reference(result)])
 }
 
-fn as_tag_field(arguments: &[&NaslValue]) -> Transform {
+fn as_tag_field<K>(_: &K, arguments: &[&NaslValue]) -> Transform {
     let key: TagKey = arguments[0].to_string().parse()?;
-    Ok(NVTField::Tag(key, arguments[1].to_string()))
+    Ok(vec![match TagValue::parse(key, arguments[1])? {
+        TagValue::Null => NVTField::NoOp,
+        x => NVTField::Tag(key, x),
+    }])
 }
 
-fn as_xref_field(arguments: &[&NaslValue]) -> Transform {
+fn as_xref_field<K>(_: &K, arguments: &[&NaslValue]) -> Transform {
     if arguments.len() != 2 {
-        return Err(FunctionError::new(
-            "script_xref",
-            FunctionErrorKind::MissingArguments(vec!["name".to_owned(), "csv".to_owned()]),
-        ));
+        return Err(FunctionErrorKind::MissingArguments(vec![
+            "name".to_owned(),
+            "csv".to_owned(),
+        ]));
     }
-    Ok(NVTField::Reference(vec![NvtRef {
+    Ok(vec![NVTField::Reference(vec![NvtRef {
         class: arguments[1].to_string(),
         id: arguments[0].to_string(),
-        text: None,
-    }]))
+    }])])
 }
 
-fn as_preference(arguments: &[&NaslValue]) -> Transform {
+fn as_preference<K>(_: &K, arguments: &[&NaslValue]) -> Transform {
     if arguments.len() < 3 {
-        return Err(FunctionError::new(
-            "script_add_preference",
-            FunctionErrorKind::MissingArguments(vec!["type".to_owned(), "value".to_owned()]),
-        ));
+        return Err(FunctionErrorKind::MissingArguments(vec![
+            "type".to_owned(),
+            "value".to_owned(),
+        ]));
     }
     let name = arguments[0].to_string();
     let class = arguments[1].to_string();
@@ -255,12 +234,12 @@ fn as_preference(arguments: &[&NaslValue]) -> Transform {
             None
         }
     };
-    Ok(NVTField::Preference(NvtPreference {
+    Ok(vec![NVTField::Preference(NvtPreference {
         id,
         class: PreferenceType::from_str(&class)?,
         name,
         default: value,
-    }))
+    })])
 }
 
 // creates the actual description functions

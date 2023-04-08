@@ -12,14 +12,12 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-use chrono::{self, Datelike, Local, LocalResult, Offset, TimeZone, Timelike, Utc};
-
-use sink::Sink;
-
-use crate::{
-    error::{FunctionError, FunctionErrorKind},
-    ContextType, NaslFunction, NaslValue, Register,
+use chrono::{
+    self, DateTime, Datelike, FixedOffset, Local, LocalResult, NaiveDateTime, Offset, TimeZone,
+    Timelike, Utc,
 };
+
+use crate::{error::FunctionErrorKind, Context, ContextType, NaslFunction, NaslValue, Register};
 use flate2::{
     read::GzDecoder, read::ZlibDecoder, write::GzEncoder, write::ZlibEncoder, Compression,
 };
@@ -27,35 +25,34 @@ use flate2::{
 #[inline]
 #[cfg(unix)]
 /// Reads 8 bytes from /dev/urandom and parses it to an i64
-fn random_impl() -> Result<i64, FunctionError> {
-    let mut rng =
-        File::open("/dev/urandom").map_err(|e| FunctionError::new("randr", e.kind().into()))?;
+fn random_impl() -> Result<i64, FunctionErrorKind> {
+    let mut rng = File::open("/dev/urandom")?;
     let mut buffer = [0u8; 8];
     rng.read_exact(&mut buffer)
         .map(|_| i64::from_be_bytes(buffer))
-        .map_err(|e| FunctionError::new("randr", e.kind().into()))
+        .map_err(|e| e.kind().into())
 }
 
 /// NASL function to get random number
-pub fn rand(_: &str, _: &dyn Sink, _: &Register) -> Result<NaslValue, FunctionError> {
+pub fn rand<K>(_: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     random_impl().map(NaslValue::Number)
 }
 
 /// NASL function to get host byte order
-pub fn get_byte_order(_: &str, _: &dyn Sink, _: &Register) -> Result<NaslValue, FunctionError> {
+pub fn get_byte_order<K>(_: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     Ok(NaslValue::Boolean(cfg!(target_endian = "little")))
 }
 
 /// NASL function to convert given number to string
-pub fn dec2str(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+pub fn dec2str<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     match register.named("num") {
         Some(ContextType::Value(NaslValue::Number(x))) => Ok(NaslValue::String(x.to_string())),
-        x => Err(FunctionError::new("dec2str", ("0", "numeric", x).into())),
+        x => Err(("0", "numeric", x).into()),
     }
 }
 
 /// takes an integer and sleeps the amount of seconds
-pub fn sleep(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+pub fn sleep<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     let positional = register.positional();
     match positional[0] {
         NaslValue::Number(x) => {
@@ -67,7 +64,7 @@ pub fn sleep(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, Fu
 }
 
 /// takes an integer and sleeps the amount of microseconds
-pub fn usleep(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+pub fn usleep<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     let positional = register.positional();
     match positional[0] {
         NaslValue::Number(x) => {
@@ -80,7 +77,7 @@ pub fn usleep(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, F
 
 /// Returns the type of given unnamed argument.
 // typeof is a reserved keyword, therefore it is prefixed with "nasl_"
-pub fn nasl_typeof(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+pub fn nasl_typeof<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     let positional = register.positional();
     if positional.is_empty() {
         return Ok(NaslValue::Null);
@@ -98,16 +95,13 @@ pub fn nasl_typeof(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslVal
 }
 
 /// Returns true when the given unnamed argument is null.
-pub fn isnull(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+pub fn isnull<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     let positional = register.positional();
     if positional.is_empty() {
-        return Err(FunctionError::new(
-            "isnull",
-            FunctionErrorKind::MissingPositionalArguments {
-                expected: 1,
-                got: positional.len(),
-            },
-        ));
+        return Err(FunctionErrorKind::MissingPositionalArguments {
+            expected: 1,
+            got: positional.len(),
+        });
     }
     match positional[0] {
         NaslValue::Null => Ok(NaslValue::Boolean(true)),
@@ -116,19 +110,19 @@ pub fn isnull(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, F
 }
 
 /// Returns the seconds counted from 1st January 1970 as an integer.
-pub fn unixtime(_: &str, _: &dyn Sink, _: &Register) -> Result<NaslValue, FunctionError> {
+pub fn unixtime<K>(_: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     match std::time::SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(t) => Ok(NaslValue::Number(t.as_secs() as i64)),
-        Err(_) => Err(FunctionError::new("unixtime", ("0", "numeric").into())),
+        Err(_) => Err(("0", "numeric").into()),
     }
 }
 
 /// Compress given data with gzip, when headformat is set to 'gzip' it uses gzipheader.
-pub fn gzip(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+pub fn gzip<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     let data = match register.named("data") {
         Some(ContextType::Value(NaslValue::Null)) => return Ok(NaslValue::Null),
         Some(ContextType::Value(x)) => Vec::<u8>::from(x),
-        _ => return Err(FunctionError::new("gzip", ("data").into())),
+        _ => return Err(("data").into()),
     };
     let headformat = match register.named("headformat") {
         Some(ContextType::Value(NaslValue::String(x))) => x,
@@ -160,11 +154,11 @@ pub fn gzip(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, Fun
 }
 
 /// uncompress given data with gzip, when headformat is set to 'gzip' it uses gzipheader.
-pub fn gunzip(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+pub fn gunzip<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     let data = match register.named("data") {
         Some(ContextType::Value(NaslValue::Null)) => return Ok(NaslValue::Null),
         Some(ContextType::Value(x)) => Vec::<u8>::from(x),
-        _ => return Err(FunctionError::new("gzip", ("data").into())),
+        _ => return Err(("data").into()),
     };
 
     let mut uncompress = ZlibDecoder::new(&data[..]);
@@ -183,7 +177,7 @@ pub fn gunzip(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, F
     }
 }
 /// Takes seven named arguments sec, min, hour, mday, mon, year, isdst and returns the Unix time.
-pub fn mktime(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+pub fn mktime<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     let sec = match register.named("sec") {
         Some(ContextType::Value(NaslValue::Number(x))) => *x as u32,
         _ => 0,
@@ -236,7 +230,10 @@ where
         ("mday".to_string(), NaslValue::from(date.day() as i64)),
         ("mon".to_string(), NaslValue::from(date.month() as i64)),
         ("year".to_string(), NaslValue::from(date.year() as i64)),
-        ("wday".to_string(), NaslValue::from(date.weekday() as i64 + 1)),
+        (
+            "wday".to_string(),
+            NaslValue::from(date.weekday() as i64 + 1),
+        ),
         ("yday".to_string(), NaslValue::from(date.ordinal() as i64)),
         // TODO: fix isdst
         ("isdst".to_string(), NaslValue::from(0)),
@@ -244,7 +241,7 @@ where
 }
 
 /// Returns an dict(mday, mon, min, wday, sec, yday, isdst, year, hour) based on optional given time in seconds and optional flag if utc or not.
-pub fn localtime(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue, FunctionError> {
+pub fn localtime<K>(register: &Register, _: &Context<K>) -> Result<NaslValue, FunctionErrorKind> {
     let utc_flag = match register.named("utc") {
         Some(ContextType::Value(NaslValue::Number(x))) => *x != 0,
         Some(ContextType::Value(NaslValue::Boolean(x))) => *x,
@@ -258,13 +255,18 @@ pub fn localtime(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue
     let date = match (utc_flag, secs) {
         (true, 0) => create_localtime_map(Utc::now()),
         (true, secs) => match Utc.timestamp_opt(secs, 0) {
-                LocalResult::Single(x) => create_localtime_map(x),
-            _ => create_localtime_map(Utc::now()),
-        }
-        (false, 0) => create_localtime_map(Local::now()),
-        (false, secs) => match Local.timestamp_opt(secs, 0) {
             LocalResult::Single(x) => create_localtime_map(x),
-            _ => create_localtime_map(Local::now())
+            _ => create_localtime_map(Utc::now()),
+        },
+        (false, 0) => create_localtime_map(Local::now()),
+
+        (false, secs) => match NaiveDateTime::from_timestamp_opt(secs, 0) {
+            Some(dt) => {
+                let offset = chrono::Local::now().offset().fix();
+                let dt: DateTime<FixedOffset> = DateTime::from_utc(dt, offset);
+                create_localtime_map(dt)
+            }
+            _ => create_localtime_map(Local::now()),
         },
     };
 
@@ -272,7 +274,7 @@ pub fn localtime(_: &str, _: &dyn Sink, register: &Register) -> Result<NaslValue
 }
 
 /// Returns found function for key or None when not found
-pub fn lookup(key: &str) -> Option<NaslFunction> {
+pub fn lookup<K>(key: &str) -> Option<NaslFunction<K>> {
     match key {
         "rand" => Some(rand),
         "get_byte_order" => Some(get_byte_order),
@@ -292,10 +294,9 @@ pub fn lookup(key: &str) -> Option<NaslFunction> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Interpreter, NaslValue, NoOpLoader, Register};
-    use chrono::{Offset};
+    use crate::{DefaultContext, Interpreter, NaslValue, Register};
+    use chrono::Offset;
     use nasl_syntax::parse;
-    use sink::DefaultSink;
     use std::time::Instant;
 
     #[test]
@@ -304,10 +305,10 @@ mod tests {
         rand();
         rand();
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         let first = parser.next();
@@ -322,10 +323,10 @@ mod tests {
         let code = r###"
         get_byte_order();
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         assert!(matches!(parser.next(), Some(Ok(NaslValue::Boolean(_)))));
@@ -336,10 +337,10 @@ mod tests {
         let code = r###"
         dec2str(num: 23);
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         assert_eq!(parser.next(), Some(Ok("23".into())));
@@ -358,10 +359,10 @@ mod tests {
         typeof(a);
         typeof(23,76);
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         assert_eq!(parser.next(), Some(Ok(NaslValue::String("string".into()))));
@@ -381,10 +382,10 @@ mod tests {
         isnull(42);
         isnull(Null);
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         assert_eq!(parser.next(), Some(Ok(NaslValue::Boolean(false))));
@@ -396,10 +397,10 @@ mod tests {
         let code = r###"
         unixtime();
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         assert!(matches!(parser.next(), Some(Ok(NaslValue::Number(_)))));
@@ -411,10 +412,10 @@ mod tests {
         gzip(data: 'z', headformat: "gzip");
         gzip(data: 'z');
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         assert_eq!(
@@ -444,10 +445,10 @@ mod tests {
         ngz = gzip(data: "ngz");
         gunzip(data: ngz);
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         parser.next();
@@ -466,10 +467,10 @@ mod tests {
         c = localtime(utc: TRUE);
         d = localtime(utc: FALSE);
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
 
@@ -539,10 +540,10 @@ mod tests {
         let code = r###"
         mktime(sec: 01, min: 02, hour: 03, mday: 01, mon: 01, year: 1970);
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         let offset = chrono::Local::now().offset().fix().local_minus_utc();
@@ -557,10 +558,10 @@ mod tests {
         let code = r###"
         sleep(1);
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         let now = Instant::now();
@@ -573,10 +574,10 @@ mod tests {
         let code = r###"
         usleep(1000);
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("no parse error expected")));
         let now = Instant::now();

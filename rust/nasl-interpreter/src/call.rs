@@ -5,7 +5,10 @@
 use nasl_syntax::{Statement, Statement::*, Token};
 
 use crate::{
-    error::InterpretError, interpreter::InterpretResult, lookup, lookup_keys::FC_ANON_ARGS,
+    error::{FunctionError, InterpretError},
+    interpreter::InterpretResult,
+    lookup,
+    lookup_keys::FC_ANON_ARGS,
     ContextType, Interpreter, NaslValue,
 };
 use std::collections::HashMap;
@@ -15,7 +18,10 @@ pub(crate) trait CallExtension {
     fn call(&mut self, name: &Token, arguments: &[Statement]) -> InterpretResult;
 }
 
-impl<'a> CallExtension for Interpreter<'a> {
+impl<'a, K> CallExtension for Interpreter<'a, K>
+where
+    K: AsRef<str>,
+{
     fn call(&mut self, name: &Token, arguments: &[Statement]) -> InterpretResult {
         let name = &Self::identifier(name)?;
         // get the context
@@ -42,9 +48,8 @@ impl<'a> CallExtension for Interpreter<'a> {
         self.registrat.create_root_child(named);
         let result = match lookup(name) {
             // Built-In Function
-            Some(function) => {
-                function(self.key, self.storage, self.registrat).map_err(|x| x.into())
-            }
+            Some(function) => function(self.registrat, self.ctxconfigs)
+                .map_err(|x| FunctionError::new(name, x).into()),
             // Check for user defined function
             None => {
                 let found = self
@@ -82,9 +87,8 @@ impl<'a> CallExtension for Interpreter<'a> {
 #[cfg(test)]
 mod tests {
     use nasl_syntax::parse;
-    use sink::DefaultSink;
 
-    use crate::{context::Register, loader::NoOpLoader, Interpreter, NaslValue};
+    use crate::{context::DefaultContext, context::Register, Interpreter, NaslValue};
 
     #[test]
     fn default_null_on_user_defined_functions() {
@@ -96,10 +100,10 @@ mod tests {
         test(a: 1);
         test();
         "###;
-        let storage = DefaultSink::new(false);
         let mut register = Register::default();
-        let loader = NoOpLoader::default();
-        let mut interpreter = Interpreter::new("1", &storage, &loader, &mut register);
+        let binding = DefaultContext::default();
+        let context = binding.as_context();
+        let mut interpreter = Interpreter::new(&mut register, &context);
         let mut parser =
             parse(code).map(|x| interpreter.resolve(&x.expect("unexpected parse error")));
         assert_eq!(parser.next(), Some(Ok(NaslValue::Null)));
