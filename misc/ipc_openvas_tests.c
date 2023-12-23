@@ -1,20 +1,6 @@
-/* Copyright (C) 2019-2022 Greenbone Networks GmbH
+/* SPDX-FileCopyrightText: 2023 Greenbone AG
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include "ipc_openvas.c"
@@ -88,22 +74,22 @@ Ensure (ipc_openvas, ipc_data_from_json_parse_error)
 
   // malformed json string
   json_fake = g_strdup (
-    "{\"type\":1,\"user-agent\":\"Mozilla/5.0 [en] (X11, U; Greenbone OS "
-    "22.04.4)\"}{\"type\":1,\"user-agent\":\"Mozilla/5.0 [en] (X11, U; "
-    "Greenbone OS 22.04.4)\"}{\"type\":1,\"user-agent\":\"Mozilla/5.0 [en] "
-    "(X11, U; Greenbone OS 22.04.4)\"}{\"type\":1,\"user-agent\":\"Mozilla/5.0 "
+    "{\"type\":2,\"user-agent\":\"Mozilla/5.0 [en] (X11, U; Greenbone OS "
+    "22.04.4)\"}{\"type\":2,\"user-agent\":\"Mozilla/5.0 [en] (X11, U; "
+    "Greenbone OS 22.04.4)\"}{\"type\":2,\"user-agent\":\"Mozilla/5.0 [en] "
+    "(X11, U; Greenbone OS 22.04.4)\"}{\"type\":2,\"user-agent\":\"Mozilla/5.0 "
     "[en] (X11, U; Greenbone OS "
-    "22.04.4)\"}{\"type\":1,\"user-agent\":\"Mozilla/5.0 [en] (X11, U; "
-    "Greenbone OS 22.04.4)\"}{\"type\":1,\"user-agent\":\"Mozilla/5.0 [en] "
-    "(X11, U; Greenbone OS 22.04.4)\"}{\"type\":1,\"user-agent\":\"Mozilla/5.0 "
+    "22.04.4)\"}{\"type\":2,\"user-agent\":\"Mozilla/5.0 [en] (X11, U; "
+    "Greenbone OS 22.04.4)\"}{\"type\":2,\"user-agent\":\"Mozilla/5.0 [en] "
+    "(X11, U; Greenbone OS 22.04.4)\"}{\"type\":2,\"user-agent\":\"Mozilla/5.0 "
     "[en] (X11, U; Greenbone OS "
-    "22.04.4)\"}{\"type\":1,\"user-agent\":\"Mozilla/5.0 [en] (X11, U; "
-    "Greenbone OS 22.04.4)\"}{\"type\":1,\"user-agent\":\"Mozilla/5.0 [en] "
-    "(X11, U; Greenbone OS 22.04.4)\"}{\"type\":1,\"user-agent\":\"Mozilla/5.0 "
+    "22.04.4)\"}{\"type\":2,\"user-agent\":\"Mozilla/5.0 [en] (X11, U; "
+    "Greenbone OS 22.04.4)\"}{\"type\":2,\"user-agent\":\"Mozilla/5.0 [en] "
+    "(X11, U; Greenbone OS 22.04.4)\"}{\"type\":2,\"user-agent\":\"Mozilla/5.0 "
     "[en] (X11, U; Greenbone OS "
-    "22.04.4)\"}{\"type\":1,\"user-agent\":\"Mozilla/5.0 [en] (X11, U; "
-    "Greenbone OS 22.04.4)\"}{\"type\":1,\"user-agent\":\"Mozilla/5.0 [en] "
-    "(X11, U; Greenbone OS 22.04.4)\"}{\"type\":1,\"user-agent\":\"Mozilla/5.0 "
+    "22.04.4)\"}{\"type\":2,\"user-agent\":\"Mozilla/5.0 [en] (X11, U; "
+    "Greenbone OS 22.04.4)\"}{\"type\":2,\"user-agent\":\"Mozilla/5.0 [en] "
+    "(X11, U; Greenbone OS 22.04.4)\"}{\"type\":2,\"user-agent\":\"Mozilla/5.0 "
     "[en] (X11, U; Greenbone OS 22.04.4)\"}{\"type\":");
 
   // Read received data
@@ -121,8 +107,8 @@ Ensure (ipc_openvas, ipc_data_from_json_parse_many_objects)
 
   // malformed json string
   json_fake =
-    g_strdup ("{\"type\":0,\"source\":\"TLS "
-              "certificate\",\"hostname\":\"localhost\"}{\"type\":1,\"user-"
+    g_strdup ("{\"type\":1,\"source\":\"TLS "
+              "certificate\",\"hostname\":\"localhost\"}{\"type\":2,\"user-"
               "agent\":\"Mozilla/5.0 [en] (X11, U; Greenbone OS "
               "22.04.4)\"}");
 

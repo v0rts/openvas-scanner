@@ -1,20 +1,6 @@
-# Copyright (C) 2011-2022 Greenbone Networks GmbH
+# SPDX-FileCopyrightText: 2023 Greenbone AG
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
-#
-# This program is free software; you can redistribute it and/or
-# modify it under the terms of the GNU General Public License
-# as published by the Free Software Foundation; either version 2
-# of the License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
 
 cmake_minimum_required (VERSION 3.0)
 
@@ -22,7 +8,7 @@ message ("-- Configuring the Scanner...")
 
 # VERSION: Always include major, minor and patch level.
 project (openvas
-  VERSION 22.4.2
+  VERSION 22.7.9
   LANGUAGES C)
 
 if (POLICY CMP0005)
@@ -36,6 +22,12 @@ if (NOT CMAKE_BUILD_TYPE)
 endif (NOT CMAKE_BUILD_TYPE)
 
 OPTION (ENABLE_COVERAGE "Enable support for coverage analysis" OFF)
+
+# the shell based script got replaced by https://github.com/greenbone/greenbone-feed-sync/
+OPTION (INSTALL_OLD_SYNC_SCRIPT "Install shell based VT feed sync script" ON)
+if (INSTALL_OLD_SYNC_SCRIPT)
+  message (DEPRECATION "greenbone-nvt-sync is deprecated in favor of greenbone-feed-sync (https://github.com/greenbone/greenbone-feed-sync/) and will be removed in the next major version")
+endif (INSTALL_OLD_SYNC_SCRIPT)
 
 ## Retrieve git revision (at configure time)
 include (GetGit)
@@ -63,7 +55,7 @@ endif (CLANG_FORMAT)
 
 # Set dev version if this is a development version and not a full release,
 # unset (put value 0 or delete line) before a full release and reset after.
-set (PROJECT_DEV_VERSION 1)
+set (PROJECT_DEV_VERSION 0)
 
 # If PROJECT_DEV_VERSION is set, the version string will be set to:
 #   "major.minor.patch~dev${PROJECT_DEV_VERSION}${GIT_REVISION}"
@@ -153,6 +145,10 @@ if (NOT OPENVAS_RUN_DIR)
   set (OPENVAS_RUN_DIR "/run/ospd")
 endif (NOT OPENVAS_RUN_DIR)
 
+if (NOT DEFINED BUILD_WITH_NETSNMP)
+  set (BUILD_WITH_NETSNMP TRUE)
+endif (NOT DEFINED BUILD_WITH_NETSNMP)
+
 set (OPENVAS_DATA_DIR    "${DATADIR}/openvas")
 set (OPENVAS_STATE_DIR   "${LOCALSTATEDIR}/lib/openvas")
 
@@ -204,7 +200,7 @@ configure_file (src/openvas_log_conf.cmake_in src/openvas_log.conf)
 enable_testing ()
 
 add_custom_target (tests
-                   DEPENDS attack-test pcap-test ipc-openvas-test)
+                   DEPENDS attack-test pcap-test ipc-openvas-test lsc-test)
 
 ## Program
 

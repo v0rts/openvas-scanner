@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2023 Greenbone AG
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 use nasl_interpreter::{InterpretError, LoadError};
 use nasl_syntax::SyntaxError;
 use storage::StorageError;
@@ -40,6 +44,8 @@ impl From<verify::Error> for Error {
                 actual: _,
                 key,
             } => key,
+            crate::VerifyError::BadSignature(e) => e,
+            crate::VerifyError::MissingKeyring => "",
         };
         Self {
             key: fin.to_string(),

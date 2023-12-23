@@ -1,21 +1,8 @@
-/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
- * Portions Copyright (C) 2006 Software in the Public Interest, Inc.
- * Based on work Copyright (C) 1998 - 2006 Tenable Network Security, Inc.
+/* SPDX-FileCopyrightText: 2023 Greenbone AG
+ * SPDX-FileCopyrightText: 2006 Software in the Public Interest, Inc.
+ * SPDX-FileCopyrightText: 1998-2006 Tenable Network Security, Inc.
  *
  * SPDX-License-Identifier: GPL-2.0-only
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 /**
@@ -31,7 +18,7 @@
 #include "../misc/nvt_categories.h" /* for ACT_INIT */
 #include "../misc/pcap_openvas.h"   /* for v6_is_local_ip */
 #include "../misc/plugutils.h"
-#include "../misc/table_driven_lsc.h" /* for make_table_driven_lsc_info_json_str */
+#include "../misc/table_driven_lsc.h" /*for run_table_driven_lsc */
 #include "../misc/user_agent.h"       /* for user_agent_set */
 #include "../nasl/nasl_debug.h"       /* for nasl_*_filename */
 #include "hosts.h"
@@ -325,155 +312,55 @@ append_vhost (const char *vhost, const char *source)
   g_info ("%s: add vhost '%s' from '%s'", __func__, vhost, source);
 }
 
-/**
- * @brief Publish the necessary data to start a Table driven LSC scan.
- *
- * If the gather-package-list.nasl plugin was launched, and it generated
- * a valid package list for a supported OS, the table driven LSC scan
- * which is subscribed to the topic will perform a scan an publish the
- * the results to be handle by the sensor/client.
- *
- * @param scan_id     Scan Id.
- * @param kb
- * @param ip_str      IP string of host.
- * @param hostname    Name of host.
- *
- * @return 0 on success, less than 0 on error.
- */
-static int
-run_table_driven_lsc (const char *scan_id, kb_t kb, const char *ip_str,
-                      const char *hostname)
+static void
+call_lsc (struct attack_start_args *args, const char *ip_str)
 {
-  gchar *json_str;
-  gchar *package_list;
-  gchar *os_release;
-  gchar *topic;
-  gchar *payload;
-  gchar *status = NULL;
-  int topic_len;
-  int payload_len;
-  int err = 0;
+  char *package_list = NULL;
+  char *os_release = NULL;
+  kb_t hostkb = NULL;
 
-  // Subscribe to status topic
-  err = mqtt_subscribe ("scanner/status");
-  if (err)
+  hostkb = args->host_kb;
+  /* Get the OS release. TODO: have a list with
+   * supported OS. */
+  os_release = kb_item_get_str (hostkb, "ssh/login/release_notus");
+  /* Get the package list. */
+  package_list = kb_item_get_str (hostkb, "ssh/login/package_list_notus");
+
+  if (run_table_driven_lsc (args->globals->scan_id, ip_str, NULL, package_list,
+                            os_release)
+      < 0)
     {
-      g_warning ("%s: Error starting lsc. Unable to subscribe", __func__);
-      return -1;
+      char buffer[2048];
+      snprintf (buffer, sizeof (buffer),
+                "ERRMSG|||%s||| ||| ||| ||| Unable to "
+                "launch table driven lsc",
+                ip_str);
+      kb_item_push_str_with_main_kb_check (get_main_kb (), "internal/results",
+                                           buffer);
+      g_warning ("%s: Unable to launch table driven LSC", __func__);
     }
-  /* Get the OS release. TODO: have a list with supported OS. */
-
-  os_release = kb_item_get_str (kb, "ssh/login/release_notus");
-  /* Get the package list. Currently only rpm support */
-  package_list = kb_item_get_str (kb, "ssh/login/package_list_notus");
-  if (!os_release || !package_list)
-    return 0;
-
-  json_str = make_table_driven_lsc_info_json_str (scan_id, ip_str, hostname,
-                                                  os_release, package_list);
   g_free (package_list);
   g_free (os_release);
-
-  // Run table driven lsc
-  if (json_str == NULL)
-    return -1;
-  err = mqtt_publish ("scanner/package/cmd/notus", json_str);
-  if (err)
-    {
-      g_warning ("%s: Error publishing message for Notus.", __func__);
-      g_free (json_str);
-      return -1;
-    }
-
-  g_free (json_str);
-
-  // Wait for Notus scanner to start or interrupt
-  while (!status)
-    {
-      err = mqtt_retrieve_message (&topic, &topic_len, &payload, &payload_len,
-                                   60000);
-      if (err == -1 || err == 1)
-        {
-          g_warning ("%s: Unable to retrieve status message from notus. %s",
-                     __func__, err == 1 ? "Timeout after 60 s." : "");
-          return -1;
-        }
-
-      // Get status if it belongs to corresponding scan and host
-      // Else wait for next status message
-      status = get_status_of_table_driven_lsc_from_json (scan_id, ip_str,
-                                                         payload, payload_len);
-
-      g_free (topic);
-      g_free (payload);
-    }
-  // If started wait for it to finish or interrupt
-  if (!g_strcmp0 (status, "running"))
-    {
-      g_debug ("%s: table driven LSC with scan id %s successfully started "
-               "for host %s",
-               __func__, scan_id, ip_str);
-      g_free (status);
-      status = NULL;
-      while (!status)
-        {
-          err = mqtt_retrieve_message (&topic, &topic_len, &payload,
-                                       &payload_len, 60000);
-          if (err == -1)
-            {
-              g_warning ("%s: Unable to retrieve status message from notus.",
-                         __func__);
-              return -1;
-            }
-          if (err == 1)
-            {
-              g_warning ("%s: Unablet to retrieve message. Timeout after 60s.",
-                         __func__);
-              return -1;
-            }
-
-          status = get_status_of_table_driven_lsc_from_json (
-            scan_id, ip_str, payload, payload_len);
-          g_free (topic);
-          g_free (payload);
-        }
-    }
-  else
-    {
-      g_warning ("%s: Unable to start lsc. Got status: %s", __func__, status);
-      g_free (status);
-      return -1;
-    }
-
-  if (g_strcmp0 (status, "finished"))
-    {
-      g_warning (
-        "%s: table driven lsc with scan id %s did not finish successfully "
-        "for host %s. Last status was %s",
-        __func__, scan_id, ip_str, status);
-      err = -1;
-    }
-  else
-    g_debug ("%s: table driven lsc with scan id %s successfully finished "
-             "for host %s",
-             __func__, scan_id, ip_str);
-  g_free (status);
-  return err;
 }
 
-static void
-process_ipc_data (const gchar *result)
+static int
+process_ipc_data (struct attack_start_args *args, const gchar *result)
 {
   ipc_data_t *idata;
+  int ipc_msg_flag = IPC_DT_NO_DATA;
 
   if ((idata = ipc_data_from_json (result, strlen (result))) != NULL)
     {
       switch (ipc_get_data_type_from_data (idata))
         {
         case IPC_DT_ERROR:
+          ipc_msg_flag |= IPC_DT_ERROR;
           g_warning ("%s: Unknown data type.", __func__);
           break;
+        case IPC_DT_NO_DATA:
+          break;
         case IPC_DT_HOSTNAME:
+          ipc_msg_flag |= IPC_DT_HOSTNAME;
           if (ipc_get_hostname_from_data (idata) == NULL)
             g_warning ("%s: ihost data is NULL ignoring new vhost", __func__);
           else
@@ -481,6 +368,7 @@ process_ipc_data (const gchar *result)
                           ipc_get_hostname_source_from_data (idata));
           break;
         case IPC_DT_USER_AGENT:
+          ipc_msg_flag |= IPC_DT_USER_AGENT;
           if (ipc_get_user_agent_from_data (idata) == NULL)
             g_warning ("%s: iuser_agent data is NULL, ignoring new user agent",
                        __func__);
@@ -493,15 +381,40 @@ process_ipc_data (const gchar *result)
               g_free (old_ua);
             }
           break;
+        case IPC_DT_LSC:
+          ipc_msg_flag |= IPC_DT_LSC;
+          set_lsc_flag ();
+          if (!scan_is_stopped () && prefs_get_bool ("table_driven_lsc")
+              && (prefs_get_bool ("mqtt_enabled")
+                  || prefs_get_bool ("openvasd_lsc_enabled")))
+            {
+              struct in6_addr hostip;
+              gchar ip_str[INET6_ADDRSTRLEN];
+
+              if (!ipc_get_lsc_data_ready_flag (idata))
+                {
+                  g_warning ("%s: Unknown data type.", __func__);
+                  ipc_msg_flag |= IPC_DT_ERROR;
+                  break;
+                }
+
+              gvm_host_get_addr6 (args->host, &hostip);
+              addr6_to_str (&hostip, ip_str);
+
+              call_lsc (args, ip_str);
+            }
+          break;
         }
       ipc_data_destroy (&idata);
     }
+  return ipc_msg_flag;
 }
 
-static void
-read_ipc (struct ipc_context *ctx)
+static int
+read_ipc (struct attack_start_args *args, struct ipc_context *ctx)
 {
   char *results;
+  int ipc_msg_flag = IPC_DT_NO_DATA;
 
   while ((results = ipc_retrieve (ctx, IPC_MAIN)) != NULL)
     {
@@ -512,15 +425,16 @@ read_ipc (struct ipc_context *ctx)
           {
             gchar *message = NULL;
             len = j - pos + 1;
-            message = g_malloc0 (sizeof (gchar) * (len));
+            message = g_malloc0 (sizeof (gchar) * (len + 1));
             memcpy (message, &results[pos], len);
             pos = j + 1;
             len = 0;
-            process_ipc_data (message);
+            ipc_msg_flag |= process_ipc_data (args, message);
             g_free (message);
           }
     }
   g_free (results);
+  return ipc_msg_flag;
 }
 
 /**
@@ -609,9 +523,11 @@ launch_plugin (struct scan_globals *globals, struct scheduler_plugin *plugin,
     {
       for (int i = 0; i < procs_get_ipc_contexts ()->len; i++)
         {
-          read_ipc (&procs_get_ipc_contexts ()->ctxs[i]);
+          read_ipc (args, &procs_get_ipc_contexts ()->ctxs[i]);
         }
     }
+
+  /* Start the plugin */
   launch_error = 0;
   pid = plugin_launch (globals, plugin, ip, vhosts, args->host_kb,
                        get_main_kb (), nvti, &launch_error);
@@ -762,20 +678,11 @@ attack_host (struct scan_globals *globals, struct in6_addr *ip,
     }
 
   if (!scan_is_stopped () && prefs_get_bool ("table_driven_lsc")
-      && prefs_get_bool ("mqtt_enabled"))
+      && !lsc_has_run ()
+      && (prefs_get_bool ("mqtt_enabled")
+          || prefs_get_bool ("openvasd_lsc_enabled")))
     {
-      g_message ("Running LSC via Notus for %s", ip_str);
-      if (run_table_driven_lsc (globals->scan_id, args->host_kb, ip_str, NULL))
-        {
-          char buffer[2048];
-          snprintf (
-            buffer, sizeof (buffer),
-            "ERRMSG|||%s||| ||| ||| ||| Unable to launch table driven lsc",
-            ip_str);
-          kb_item_push_str_with_main_kb_check (get_main_kb (),
-                                               "internal/results", buffer);
-          g_warning ("%s: Unable to launch table driven LSC", __func__);
-        }
+      call_lsc (args, ip_str);
     }
 
   pluginlaunch_wait (get_main_kb (), args->host_kb);
@@ -795,33 +702,6 @@ host_died:
   pluginlaunch_stop ();
   plugins_scheduler_free (args->sched);
   host_set_time (get_main_kb (), ip_str, "HOST_END");
-}
-
-/*
- * Checks if a host is authorized to be scanned.
- *
- * @param[in]   host    Host to check access to.
- * @param[in]   addr    Pointer to address so a hostname isn't resolved multiple
- *                      times.
- * @param[in]   hosts_allow   Hosts whitelist.
- * @param[in]   hosts_deny    Hosts blacklist.
- *
- * @return 1 if host authorized, 0 otherwise.
- */
-static int
-host_authorized (const gvm_host_t *host, const struct in6_addr *addr,
-                 const gvm_hosts_t *hosts_allow, const gvm_hosts_t *hosts_deny)
-{
-  /* Check Hosts Access. */
-  if (host == NULL)
-    return 0;
-
-  if (hosts_deny && gvm_host_in_hosts (host, addr, hosts_deny))
-    return 0;
-  if (hosts_allow && !gvm_host_in_hosts (host, addr, hosts_allow))
-    return 0;
-
-  return 1;
 }
 
 /*
@@ -886,6 +766,34 @@ check_deprecated_prefs (void)
     }
 }
 
+#ifndef FEATURE_HOSTS_ALLOWED_ONLY
+/*
+ * Checks if a host is authorized to be scanned.
+ *
+ * @param[in]   host    Host to check access to.
+ * @param[in]   addr    Pointer to address so a hostname isn't resolved multiple
+ *                      times.
+ * @param[in]   hosts_allow   Hosts whitelist.
+ * @param[in]   hosts_deny    Hosts blacklist.
+ *
+ * @return 1 if host authorized, 0 otherwise.
+ */
+static int
+host_authorized (const gvm_host_t *host, const struct in6_addr *addr,
+                 const gvm_hosts_t *hosts_allow, const gvm_hosts_t *hosts_deny)
+{
+  /* Check Hosts Access. */
+  if (host == NULL)
+    return 0;
+
+  if (hosts_deny && gvm_host_in_hosts (host, addr, hosts_deny))
+    return 0;
+  if (hosts_allow && !gvm_host_in_hosts (host, addr, hosts_allow))
+    return 0;
+
+  return 1;
+}
+
 /*
  * Check if a scan is authorized on a host.
  *
@@ -918,6 +826,7 @@ check_host_authorization (gvm_host_t *host, const struct in6_addr *addr)
   gvm_hosts_free (sys_hosts_deny);
   return 0;
 }
+#endif
 
 /**
  * @brief Set up some data and jump into attack_host()
@@ -932,7 +841,7 @@ attack_start (struct ipc_context *ipcc, struct attack_start_args *args)
   struct timeval then;
   kb_t kb = args->host_kb;
   kb_t main_kb = get_main_kb ();
-  int ret, ret_host_auth;
+  int ret;
   args->ipc_context = ipcc;
 
   nvticache_reset ();
@@ -953,7 +862,8 @@ attack_start (struct ipc_context *ipcc, struct attack_start_args *args)
   gvm_host_get_addr6 (args->host, &hostip);
   addr6_to_str (&hostip, ip_str);
 
-  ret_host_auth = check_host_authorization (args->host, &hostip);
+#ifndef FEATURE_HOSTS_ALLOWED_ONLY
+  int ret_host_auth = check_host_authorization (args->host, &hostip);
   if (ret_host_auth < 0)
     {
       if (ret_host_auth == -1)
@@ -966,6 +876,7 @@ attack_start (struct ipc_context *ipcc, struct attack_start_args *args)
       g_warning ("Host %s access denied.", ip_str);
       return;
     }
+#endif
 
   if (prefs_get_bool ("test_empty_vhost"))
     {
@@ -1019,6 +930,55 @@ apply_hosts_excluded (gvm_hosts_t *hosts)
     }
 }
 
+#ifdef FEATURE_HOSTS_ALLOWED_ONLY
+static void
+print_host_access_denied (gpointer data, gpointer systemwide)
+{
+  kb_t kb = NULL;
+  int *sw = systemwide;
+  connect_main_kb (&kb);
+  if (*sw == 0)
+    message_to_client ((kb_t) kb, "Host access denied.", (gchar *) data, NULL,
+                       "ERRMSG");
+  else if (*sw == 1)
+    message_to_client ((kb_t) kb,
+                       "Host access denied (system-wide restriction).",
+                       (gchar *) data, NULL, "ERRMSG");
+  kb_item_set_str_with_main_kb_check ((kb_t) kb, "internal/host_deny", "True",
+                                      0);
+  kb_lnk_reset (kb);
+  g_warning ("Host %s access denied.", (gchar *) data);
+}
+
+static void
+apply_hosts_allow_deny (gvm_hosts_t *hosts)
+{
+  GSList *removed = NULL;
+  const char *allow_hosts = prefs_get ("hosts_allow");
+  const char *deny_hosts = prefs_get ("hosts_deny");
+  int systemwide;
+  if (allow_hosts || deny_hosts)
+    {
+      systemwide = 0;
+      removed = gvm_hosts_allowed_only (hosts, deny_hosts, allow_hosts);
+      g_slist_foreach (removed, print_host_access_denied,
+                       (gpointer) &systemwide);
+      g_slist_free_full (removed, g_free);
+    }
+
+  const char *sys_allow_hosts = prefs_get ("sys_hosts_allow");
+  const char *sys_deny_hosts = prefs_get ("sys_hosts_deny");
+  if (sys_allow_hosts || sys_deny_hosts)
+    {
+      systemwide = 1;
+      removed = gvm_hosts_allowed_only (hosts, sys_deny_hosts, sys_allow_hosts);
+      g_slist_foreach (removed, print_host_access_denied,
+                       (gpointer) &systemwide);
+      g_slist_free_full (removed, g_free);
+    }
+}
+#endif
+
 static void
 apply_hosts_preferences_ordering (gvm_hosts_t *hosts)
 {
@@ -1042,9 +1002,44 @@ apply_hosts_preferences_ordering (gvm_hosts_t *hosts)
     g_debug ("hosts_ordering: Sequential.");
 }
 
-static void
+static int
 apply_hosts_reverse_lookup_preferences (gvm_hosts_t *hosts)
 {
+#ifdef FEATURE_REVERSE_LOOKUP_EXCLUDED
+  const char *exclude_hosts = prefs_get ("exclude_hosts");
+  int hosts_excluded = 0;
+
+  if (prefs_get_bool ("reverse_lookup_unify"))
+    {
+      gvm_hosts_t *excluded;
+
+      excluded = gvm_hosts_reverse_lookup_unify_excluded (hosts);
+      g_debug ("reverse_lookup_unify: Skipped %zu host(s).", excluded->count);
+
+      // Get the amount of hosts which are excluded now for this option,
+      // but they are already in the exclude list.
+      // This is to avoid issues with the scan progress calculation, since
+      // the amount of excluded host could be duplicated.
+      hosts_excluded += gvm_hosts_exclude (excluded, exclude_hosts);
+
+      gvm_hosts_free (excluded);
+    }
+
+  if (prefs_get_bool ("reverse_lookup_only"))
+    {
+      gvm_hosts_t *excluded;
+
+      excluded = gvm_hosts_reverse_lookup_only_excluded (hosts);
+      g_debug ("reverse_lookup_unify: Skipped %zu host(s).", excluded->count);
+      // Get the amount of hosts which are excluded now for this option,
+      // but they are already in the exclude list.
+      // This is to avoid issues with the scan progress calculation, since
+      // the amount of excluded host could be duplicated.
+      hosts_excluded += gvm_hosts_exclude (excluded, exclude_hosts);
+      gvm_hosts_free (excluded);
+    }
+  return exclude_hosts ? hosts_excluded : 0;
+#else
   /* Reverse-lookup unify ? */
   if (prefs_get_bool ("reverse_lookup_unify"))
     g_debug ("reverse_lookup_unify: Skipped %d host(s).",
@@ -1054,6 +1049,9 @@ apply_hosts_reverse_lookup_preferences (gvm_hosts_t *hosts)
   if (prefs_get_bool ("reverse_lookup_only"))
     g_debug ("reverse_lookup_only: Skipped %d host(s).",
              gvm_hosts_reverse_lookup_only (hosts));
+
+  return 0;
+#endif
 }
 
 static int
@@ -1270,15 +1268,25 @@ attack_network (struct scan_globals *globals)
 
   /* Apply Hosts preferences. */
   apply_hosts_preferences_ordering (hosts);
-  apply_hosts_reverse_lookup_preferences (hosts);
+
+  int already_excluded = 0;
+  already_excluded = apply_hosts_reverse_lookup_preferences (hosts);
+
+#ifdef FEATURE_HOSTS_ALLOWED_ONLY
+  // Remove hosts which are denied and/or keep the ones in the allowed host
+  // lists
+  // for both, user and system wide settings.
+  apply_hosts_allow_deny (hosts);
+#endif
 
   /* Send the hosts count to the client, after removing duplicated and
    * unresolved hosts.*/
-  sprintf (buf, "%d", gvm_hosts_count (hosts));
+  sprintf (buf, "%d", gvm_hosts_count (hosts) + already_excluded);
   connect_main_kb (&main_kb);
   message_to_client (main_kb, buf, NULL, NULL, "HOSTS_COUNT");
   kb_lnk_reset (main_kb);
 
+  // Remove the excluded hosts
   apply_hosts_excluded (hosts);
 
   host = gvm_hosts_next (hosts);

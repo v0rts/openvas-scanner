@@ -1,21 +1,8 @@
-/* Portions Copyright (C) 2009-2022 Greenbone Networks GmbH
- * Portions Copyright (C) 2006 Software in the Public Interest, Inc.
- * Based on work Copyright (C) 1998 - 2006 Tenable Network Security, Inc.
+/* SPDX-FileCopyrightText: 2023 Greenbone AG
+ * SPDX-FileCopyrightText: 2006 Software in the Public Interest, Inc.
+ * SPDX-FileCopyrightText: 1998-2006 Tenable Network Security, Inc.
  *
  * SPDX-License-Identifier: GPL-2.0-only
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 /**
@@ -423,6 +410,7 @@ static int
 attack_network_init (struct scan_globals *globals, const gchar *config_file)
 {
   const char *mqtt_server_uri;
+  const char *openvasd_server_uri;
 
   set_default_openvas_prefs ();
   prefs_config (config_file);
@@ -444,19 +432,34 @@ attack_network_init (struct scan_globals *globals, const gchar *config_file)
   nvticache_reset ();
 
   /* Init MQTT communication */
-  mqtt_server_uri = prefs_get ("mqtt_server_uri");
-  if (mqtt_server_uri)
+  openvasd_server_uri = prefs_get ("openvasd_server");
+  if (openvasd_server_uri)
     {
-      if ((mqtt_init (mqtt_server_uri)) != 0)
+      g_message ("%s: LSC via openvasd", __func__);
+      prefs_set ("openvasd_lsc_enabled", "yes");
+    }
+  else
+    {
+      mqtt_server_uri = prefs_get ("mqtt_server_uri");
+      if (mqtt_server_uri)
         {
-          g_message ("%s: INIT MQTT: FAIL", __func__);
-          send_message_to_client_and_finish_scan (
-            "ERRMSG||| ||| ||| ||| |||MQTT initialization failed");
-        }
-      else
-        {
-          g_message ("%s: INIT MQTT: SUCCESS", __func__);
-          prefs_set ("mqtt_enabled", "yes");
+#ifdef AUTH_MQTT
+          const char *mqtt_user = prefs_get ("mqtt_user");
+          const char *mqtt_pass = prefs_get ("mqtt_pass");
+          if ((mqtt_init_auth (mqtt_server_uri, mqtt_user, mqtt_pass)) != 0)
+#else
+          if ((mqtt_init (mqtt_server_uri)) != 0)
+#endif
+            {
+              g_message ("%s: INIT MQTT: FAIL", __func__);
+              send_message_to_client_and_finish_scan (
+                "ERRMSG||| ||| ||| ||| |||MQTT initialization failed");
+            }
+          else
+            {
+              g_message ("%s: INIT MQTT: SUCCESS", __func__);
+              prefs_set ("mqtt_enabled", "yes");
+            }
         }
     }
 

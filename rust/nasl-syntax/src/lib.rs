@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Greenbone Networks GmbH
+// SPDX-FileCopyrightText: 2023 Greenbone AG
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -10,15 +10,21 @@ mod grouping_extension;
 mod infix_extension;
 mod keyword_extension;
 mod lexer;
+mod loader;
+mod naslvalue;
 mod operation;
 mod postfix_extension;
 mod prefix_extension;
 mod statement;
 mod token;
 mod variable_extension;
+// should be replaced with tracing
+pub mod logger;
 
 pub use error::{ErrorKind, SyntaxError};
 pub use lexer::Lexer;
+pub use loader::*;
+pub use naslvalue::*;
 pub use statement::*;
 pub use storage::nvt::ACT;
 pub use token::Base as NumberBase;
@@ -66,24 +72,29 @@ mod tests {
             vec![
                 Token {
                     category: Category::Identifier(IdentifierType::LocalVar),
-                    position: (1, 1)
+                    line_column: (1, 1),
+                    position: (0, 9)
                 },
                 Token {
                     category: Category::Identifier(IdentifierType::Undefined("hello".to_owned())),
-                    position: (1, 11)
+                    line_column: (1, 11),
+                    position: (10, 15)
                 },
                 Token {
                     category: Category::Equal,
-                    position: (1, 17)
+                    line_column: (1, 17),
+                    position: (16, 17)
                 },
                 Token {
                     category: Category::Data("World!".as_bytes().to_vec()),
-                    position: (1, 19)
+                    line_column: (1, 19),
+                    position: (18, 26)
                 },
                 Token {
                     category: Category::Semicolon,
-                    position: (1, 27)
-                }
+                    line_column: (1, 27),
+                    position: (26, 27)
+                },
             ]
         );
     }
@@ -102,11 +113,13 @@ mod tests {
                     AssignOrder::AssignReturn,
                     Box::new(Variable(Token {
                         category: Identifier(IdentifierType::Undefined("a".to_owned())),
-                        position: (1, 1)
+                        line_column: (1, 1),
+                        position: (0, 1),
                     },)),
                     Box::new(Primitive(Token {
                         category: Number(23),
-                        position: (1, 5)
+                        line_column: (1, 5),
+                        position: (4, 6),
                     }))
                 )),
                 Ok(Assign(
@@ -114,11 +127,13 @@ mod tests {
                     AssignOrder::AssignReturn,
                     Box::new(Variable(Token {
                         category: Identifier(IdentifierType::Undefined("b".to_owned())),
-                        position: (1, 8)
+                        line_column: (1, 8),
+                        position: (7, 8),
                     },)),
                     Box::new(Primitive(Token {
                         category: Number(1),
-                        position: (1, 12)
+                        line_column: (1, 12),
+                        position: (11, 12),
                     }))
                 ))
             ]

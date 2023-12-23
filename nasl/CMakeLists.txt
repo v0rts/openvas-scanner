@@ -1,20 +1,6 @@
-# Copyright (C) 2009-2022 Greenbone Networks GmbH
+# SPDX-FileCopyrightText: 2023 Greenbone AG
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
-#
-# This program is free software; you can redistribute it and/or
-# modify it under the terms of the GNU General Public License
-# as published by the Free Software Foundation; either version 2
-# of the License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
 
 ## Config
 
@@ -40,7 +26,7 @@ pkg_check_modules (LIBSSH REQUIRED libssh>=0.6.0)
 
 set (KSBA_MIN_VERSION "1.0.7")
 # try with package config
-pkg_check_modules (KSBA REQUIRED ksba>=1.0.7)
+pkg_check_modules (KSBA ksba>=1.0.7)
 if (NOT KSBA_FOUND)
   # try with find library
   find_library (KSBA ksba)
@@ -84,14 +70,18 @@ if (NOT GPGME_FOUND)
     OUTPUT_STRIP_TRAILING_WHITESPACE)
 endif (NOT GPGME_FOUND)
 
-message (STATUS "Looking for netsnmp...")
-find_library (SNMP netsnmp)
-message (STATUS "Looking for netsnmp... ${SNMP}")
-if (SNMP)
+if (BUILD_WITH_NETSNMP)
+  message (STATUS "Looking for netsnmp...")
+  find_library (NETSNMP netsnmp)
+  message (STATUS "Looking for netsnmp... ${NETSNMP}")
+else (BUILD_WITH_NETSNMP)
+  message (STATUS "Netsnmp support disabled")
+endif (BUILD_WITH_NETSNMP)
+if (NETSNMP)
   execute_process (COMMAND net-snmp-config --libs
     OUTPUT_VARIABLE SNMP_LDFLAGS
     OUTPUT_STRIP_TRAILING_WHITESPACE)
-endif (SNMP)
+endif (NETSNMP)
 
 message (STATUS "Looking for libgcrypt...")
 find_library (GCRYPT gcrypt)
@@ -117,9 +107,9 @@ endif (NOT GCRYPT)
 
 
 ## Library
-if (SNMP)
+if (NETSNMP)
   add_definitions (-DHAVE_NETSNMP)
-endif (SNMP)
+endif (NETSNMP)
 
 
 # The "-fno-strict-aliasing" silences warnings caused by macros defined in byteorder.h.

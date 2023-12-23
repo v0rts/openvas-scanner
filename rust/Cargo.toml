@@ -1,11 +1,39 @@
+
 [workspace]
+resolver = "2"
 members = [
+  "nasl-builtin-knowledge-base",
+  "nasl-builtin-raw-ip",
+  "nasl-builtin-cryptographic",
+  "nasl-builtin-ssh",
+  "nasl-builtin-host",
+  "nasl-builtin-string",
+  "nasl-builtin-misc",
+  "nasl-builtin-description",
+  "nasl-builtin-utils",
+  "nasl-builtin-std",
   "nasl-syntax",
   "nasl-interpreter",
   "nasl-cli",
+  "nasl-c-lib",
+  "nasl-c-lib/libgcrypt-sys",
   "storage",
   "redis-storage",
   "json-storage",
   "feed",
   "feed-verifier",
+  "models",
+  "osp",
+  "openvasd",
+  "scanconfig",
+  "infisto",
+  "smoketest",
+  "notus",
+  "plugin-scheduler",
+  "dep-graph",
 ]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"

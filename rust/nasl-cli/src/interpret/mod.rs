@@ -1,43 +1,44 @@
-// Copyright (C) 2023 Greenbone Networks GmbH
+// SPDX-FileCopyrightText: 2023 Greenbone AG
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-use std::{fmt::Display, path::PathBuf};
+use std::path::PathBuf;
 
 use feed::HashSumNameLoader;
 use nasl_interpreter::{
-    load_non_utf8_path, Context, DefaultLogger, FSPluginLoader, Interpreter, LoadError, Loader,
-    NaslLogger, NaslValue, NoOpLoader, Register,
+    load_non_utf8_path, logger::DefaultLogger, logger::NaslLogger, ContextBuilder, FSPluginLoader,
+    Interpreter, KeyDispatcherSet, LoadError, Loader, NaslValue, NoOpLoader, RegisterBuilder,
 };
 use storage::{DefaultDispatcher, Dispatcher, Retriever};
 
 use crate::{CliError, CliErrorKind, Db};
 
-struct Run<'a, K> {
+struct Run<K: AsRef<str>> {
+    context_builder: nasl_interpreter::ContextBuilder<K, KeyDispatcherSet<K>>,
     feed: Option<PathBuf>,
-    dispatcher: &'a dyn Dispatcher<K>,
-    retriever: &'a dyn Retriever<K>,
-    key: K,
-    loader: &'a dyn Loader,
 }
 
-impl<'a, K> Run<'a, K>
-where
-    K: AsRef<str>,
-{
-    fn new(
-        key: K,
-        feed: Option<PathBuf>,
-        dispatcher: &'a dyn Dispatcher<K>,
-        retriever: &'a dyn Retriever<K>,
-        loader: &'a dyn Loader,
-    ) -> Self {
+impl Run<String> {
+    fn new(db: &Db, feed: Option<PathBuf>, target: Option<String>) -> Self {
+        let key = String::default();
+
+        let mut context_builder = match db {
+            Db::InMemory => ContextBuilder::new(key, Box::<DefaultDispatcher<String>>::default()),
+            Db::Redis(url) => ContextBuilder::new(
+                key,
+                Box::new(redis_storage::NvtDispatcher::as_dispatcher(url).unwrap()),
+            ),
+        };
+
+        context_builder = match feed.clone() {
+            Some(x) => context_builder.loader(FSPluginLoader::new(x)),
+            None => context_builder.loader(NoOpLoader::default()),
+        }
+        .target(target.unwrap_or_default());
+
         Self {
+            context_builder,
             feed,
-            dispatcher,
-            retriever,
-            key,
-            loader,
         }
     }
 
@@ -61,7 +62,7 @@ where
                                 }
                             }
                         }
-                        Err(_) => todo!(),
+                        Err(e) => Err(e.into()),
                     }
                 }
                 None => Err(LoadError::NotFound(script.to_string()).into()),
@@ -70,25 +71,16 @@ where
         }
     }
 
-    fn run(&self, script: &str, verbose: bool) -> Result<(), CliErrorKind> {
+    fn run(&self, script: &str) -> Result<(), CliErrorKind> {
         let logger = DefaultLogger::default();
-
-        let context = Context::new(
-            &self.key,
-            self.dispatcher,
-            self.retriever,
-            self.loader,
-            &logger,
-        );
-        let mut register = Register::default();
+        let context = self.context_builder.build();
+        let mut register = RegisterBuilder::build();
         let mut interpreter = Interpreter::new(&mut register, &context);
         let code = self.load(script)?;
         for stmt in nasl_syntax::parse(&code) {
             match stmt {
                 Ok(stmt) => {
-                    if verbose {
-                        eprintln!("> {stmt}");
-                    }
+                    tracing::debug!("> {stmt}");
                     let r = match interpreter.retry_resolve(&stmt, 5) {
                         Ok(x) => x,
                         Err(e) => match &e.kind {
@@ -107,24 +99,19 @@ where
                     match r {
                         NaslValue::Exit(rc) => std::process::exit(rc as i32),
                         _ => {
-                            if verbose {
-                                eprintln!("=> {r:?}");
-                            }
+                            tracing::debug!("=> {r:?}", r = r);
                         }
                     }
                 }
 
-                Err(e) => return Err(e.into()),
+                Err(e) => {
+                    context.executor().nasl_fn_cache_clear();
+                    return Err(e.into());
+                }
             };
         }
+        context.executor().nasl_fn_cache_clear();
         Ok(())
-    }
-}
-
-fn build_loader(feed: Option<PathBuf>) -> Box<dyn Loader> {
-    match feed {
-        Some(x) => Box::new(FSPluginLoader::new(x)),
-        None => Box::<NoOpLoader>::default(),
     }
 }
 
@@ -144,29 +131,15 @@ where
         self
     }
 }
-fn build_dispatcher<K>(db: &Db) -> Box<dyn Storage<K>>
-where
-    K: AsRef<str> + Display + Default + From<String> + 'static,
-{
-    match db {
-        Db::InMemory => Box::<DefaultDispatcher<K>>::default(),
-        Db::Redis(url) => Box::new(redis_storage::NvtDispatcher::as_dispatcher(url).unwrap()),
-    }
-}
 
-pub fn run(db: &Db, feed: Option<PathBuf>, script: String, verbose: bool) -> Result<(), CliError> {
-    let k = String::default();
-    let storage = build_dispatcher(db);
-    let loader = build_loader(feed.clone());
-
-    let runner = Run::new(
-        k,
-        feed,
-        storage.as_dispatcher(),
-        storage.as_retriever(),
-        &*loader,
-    );
-    runner.run(&script, verbose).map_err(|e| CliError {
+pub fn run(
+    db: &Db,
+    feed: Option<PathBuf>,
+    script: String,
+    target: Option<String>,
+) -> Result<(), CliError> {
+    let runner = Run::new(db, feed, target);
+    runner.run(&script).map_err(|e| CliError {
         filename: script,
         kind: e,
     })

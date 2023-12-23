@@ -1,0 +1,17 @@
+// SPDX-FileCopyrightText: 2023 Greenbone AG
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde_support",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[cfg_attr(feature = "bincode_support", derive(bincode::Encode, bincode::Decode))]
+/// Represents a parameter for a VTS configuration.
+pub struct Parameter {
+    /// The ID of the parameter.
+    pub id: u16,
+    /// The value of the parameter.
+    pub value: String,
+}

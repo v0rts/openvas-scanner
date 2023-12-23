@@ -1,10 +1,10 @@
-// Copyright (C) 2023 Greenbone Networks GmbH
+// SPDX-FileCopyrightText: 2023 Greenbone AG
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 //! Defines NVT
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     fmt::Display,
     marker::PhantomData,
     str::FromStr,
@@ -96,7 +96,7 @@ impl FromStr for ACT {
 macro_rules! make_str_lookup_enum {
     ($enum_name:ident: $doc:expr => { $($matcher:ident => $key:ident),+ }) => {
         #[doc = $doc]
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Ord,PartialOrd)]
         #[cfg_attr(feature = "serde_support",
                    derive(serde::Serialize, serde::Deserialize),
                    serde(rename_all = "snake_case")
@@ -189,7 +189,8 @@ make_str_lookup_enum! {
         remote_banner => RemoteBanner,
         remote_banner_unreliable => RemoteBannerUnreliable,
         remote_probe => RemoteProbe,
-        remote_vul => RemoteVul
+        remote_vul => RemoteVul,
+        package_unreliable => PackageUnreliable
     }
 }
 
@@ -416,7 +417,7 @@ pub struct Nvt {
     /// The filename of the nvt.
     pub filename: String,
     /// The tags of the nvt.
-    pub tag: HashMap<TagKey, TagValue>,
+    pub tag: BTreeMap<TagKey, TagValue>,
     /// The direct dependencies of the nvt.
     pub dependencies: Vec<String>,
     /// The required keys to run the NVT.
@@ -522,13 +523,12 @@ where
 
 impl<S, K> Dispatcher<K> for PerNVTDispatcher<S, K>
 where
-    K: AsRef<str>,
-    S: NvtDispatcher<K>,
+    K: AsRef<str> + Send + Sync,
+    S: NvtDispatcher<K> + Send + Sync,
 {
     fn dispatch(&self, key: &K, scope: crate::Field) -> Result<(), StorageError> {
         match scope {
             Field::NVT(nvt) => self.store_nvt_field(nvt),
-            // TODO change here to store other fields instead
             Field::KB(kb) => self.dispatcher.dispatch_kb(key, kb),
         }
     }
@@ -551,6 +551,14 @@ where
 {
     fn retrieve(&self, key: &K, scope: &crate::Retrieve) -> Result<Vec<Field>, StorageError> {
         self.dispatcher.retrieve(key, scope)
+    }
+
+    fn retrieve_by_field(
+        &self,
+        field: &Field,
+        scope: &crate::Retrieve,
+    ) -> Result<Vec<(K, Vec<Field>)>, StorageError> {
+        self.dispatcher.retrieve_by_field(field, scope)
     }
 }
 

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2023 Greenbone AG
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Verifies a feed
 //!
 //! It includes a HashVerifier that loads the hashsum file and verify for each entry that the given
@@ -8,15 +12,28 @@
 
 use std::{
     fmt::Display,
+    fs::File,
     io::{self, BufRead, BufReader, Read},
 };
 
 use hex::encode;
 use nasl_interpreter::{AsBufReader, LoadError};
+use nasl_syntax::Loader;
 use sha2::{Digest, Sha256};
 
+use openpgp::{
+    parse::stream::{
+        DetachedVerifierBuilder, GoodChecksum, MessageLayer, MessageStructure, VerificationHelper,
+    },
+    parse::Parse,
+    policy::StandardPolicy,
+    Cert, KeyHandle,
+};
+use sequoia_ipc::keybox::{Keybox, KeyboxRecord};
+use sequoia_openpgp as openpgp;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Defines error cases that can happen while verifiying
+/// Defines error cases that can happen while verifying
 pub enum Error {
     /// Feed is incorrect
     SumsFileCorrupt(Hasher),
@@ -31,6 +48,10 @@ pub enum Error {
         /// The key of the file
         key: String,
     },
+    /// When signature check of the hashsumfile fails
+    BadSignature(String),
+    /// Missingkeyring
+    MissingKeyring,
 }
 
 impl From<LoadError> for Error {
@@ -49,7 +70,148 @@ impl Display for Error {
                 actual,
                 key,
             } => write!(f, "{key} hash {actual} is not as expected ({expected})."),
+            Error::BadSignature(e) => write!(f, "{e}"),
+            Error::MissingKeyring => write!(
+                f,
+                "Signature check is enabled but there is no keyring. Set the GNUPGHOME environment variable"
+            ),
         }
+    }
+}
+impl std::error::Error for Error {}
+
+struct VHelper {
+    keyring: String,
+    not_before: Option<std::time::SystemTime>,
+    not_after: std::time::SystemTime,
+}
+
+impl VHelper {
+    fn new(keyring: String) -> Self {
+        Self {
+            keyring,
+            not_before: None,
+            not_after: std::time::SystemTime::now(),
+        }
+    }
+}
+
+impl VerificationHelper for VHelper {
+    fn get_certs(&mut self, _ids: &[KeyHandle]) -> openpgp::Result<Vec<Cert>> {
+        let file = File::open(self.keyring.as_str())?;
+        let kbx = Keybox::from_reader(file)?;
+
+        let certs = kbx
+            // Keep only records which were parsed successfully.
+            .filter_map(|kbx_record| kbx_record.ok())
+            // Map the OpenPGP records to the contained certs.
+            .filter_map(|kbx_record| match kbx_record {
+                KeyboxRecord::OpenPGP(r) => Some(r.cert()),
+                _ => None,
+            })
+            .collect::<openpgp::Result<Vec<Cert>>>()?;
+        Ok(certs)
+    }
+
+    fn check(&mut self, structure: MessageStructure) -> openpgp::Result<()> {
+        for layer in structure.into_iter() {
+            match layer {
+                MessageLayer::SignatureGroup { results } => {
+                    for result in results {
+                        match result {
+                            Ok(GoodChecksum { sig, ka, .. }) => {
+                                match (
+                                    sig.signature_creation_time(),
+                                    self.not_before,
+                                    self.not_after,
+                                ) {
+                                    (None, _, _) => {
+                                        eprintln!("Malformed signature:");
+                                    }
+                                    (Some(t), Some(not_before), not_after) => {
+                                        if t < not_before {
+                                            eprintln!(
+                                                "Signature by {:X} was created before \
+                                                 the --not-before date.",
+                                                ka.key().fingerprint()
+                                            );
+                                        } else if t > not_after {
+                                            eprintln!(
+                                                "Signature by {:X} was created after \
+                                                 the --not-after date.",
+                                                ka.key().fingerprint()
+                                            );
+                                        }
+                                    }
+                                    (Some(t), None, not_after) => {
+                                        if t > not_after {
+                                            eprintln!(
+                                                "Signature by {:X} was created after \
+                                                 the --not-after date.",
+                                                ka.key().fingerprint()
+                                            );
+                                        }
+                                    }
+                                };
+                            }
+                            Err(e) => return Err(anyhow::Error::msg(e.to_string())),
+                        }
+                    }
+                }
+                MessageLayer::Compression { .. } => (),
+                _ => unreachable!(),
+            }
+        }
+        Ok(())
+    }
+}
+/// Trait for signature check
+pub trait SignatureChecker {
+    /// For signature check the GNUPGHOME environment variable
+    /// must be set with the path to the keyring.
+    /// If this is satisfied, the signature check is performed
+    fn signature_check(feed_path: &str) -> Result<(), Error> {
+        let mut gnupghome = match std::env::var("GNUPGHOME") {
+            Ok(v) => v,
+            Err(_) => {
+                return Err(Error::MissingKeyring);
+            }
+        };
+        gnupghome.push_str("/pubring.kbx");
+
+        let helper = VHelper::new(gnupghome);
+
+        let mut sign_path = feed_path.to_owned();
+        sign_path.push_str("/sha256sums.asc");
+        let mut sig_file = File::open(sign_path).unwrap();
+        let mut signature = Vec::new();
+        let _ = sig_file.read_to_end(&mut signature);
+
+        let mut data_path = feed_path.to_owned();
+        data_path.push_str("/sha256sums");
+        let mut data_file = File::open(data_path).unwrap();
+        let mut data = Vec::new();
+        let _ = data_file.read_to_end(&mut data);
+
+        let v = match DetachedVerifierBuilder::from_bytes(&signature[..]) {
+            Ok(v) => v,
+            Err(_) => {
+                return Err(Error::BadSignature(
+                    "Signature verification failed".to_string(),
+                ));
+            }
+        };
+
+        let p = &StandardPolicy::new();
+        if let Ok(mut verifier) = v.with_policy(p, None, helper) {
+            match verifier.verify_bytes(data) {
+                Ok(_) => return Ok(()),
+                Err(e) => return Err(Error::BadSignature(e.to_string())),
+            }
+        };
+        Err(Error::BadSignature(
+            "Signature verification failed".to_string(),
+        ))
     }
 }
 
@@ -60,6 +222,7 @@ pub enum Hasher {
     Sha256,
 }
 
+/// Computes hash of a given reader
 fn compute_hash_with<R, H>(
     reader: &mut BufReader<R>,
     hasher: &dyn Fn() -> H,
@@ -92,7 +255,8 @@ impl Hasher {
         }
     }
 
-    fn hash<R>(&self, reader: &mut BufReader<R>, key: &str) -> Result<String, Error>
+    /// Returns the hash of a given reader and key
+    pub fn hash<R>(&self, reader: &mut BufReader<R>, key: &str) -> Result<String, Error>
     where
         R: Read,
     {
@@ -126,8 +290,16 @@ impl<'a, R: Read> HashSumNameLoader<'a, R> {
         let buf = reader
             .as_bufreader(Hasher::Sha256.sum_file())
             .map(|x| x.lines())
-            .map_err(|_| Error::SumsFileCorrupt(Hasher::Sha256))?;
+            .map_err(Error::LoadError)?;
         Ok(Self::new(buf, reader, Hasher::Sha256))
+    }
+
+    /// Returns the hashsum of the sums file
+    pub fn sumfile_hash(&self) -> Result<String, Error> {
+        self.hasher.hash(
+            &mut self.reader.as_bufreader(self.hasher.sum_file())?,
+            self.hasher.sum_file(),
+        )
     }
 }
 
@@ -137,43 +309,145 @@ pub trait FileNameLoader {
     fn next_filename(&mut self) -> Option<Result<String, Error>>;
 }
 
-impl<R> FileNameLoader for HashSumNameLoader<'_, R>
+impl<'a, R> Iterator for HashSumNameLoader<'a, R>
 where
     R: Read,
 {
-    fn next_filename(&mut self) -> Option<Result<String, Error>> {
-        let verify_sum_line = |l: &str| -> Result<String, Error> {
-            let (expected, name) = l
-                .rsplit_once("  ")
-                .ok_or_else(|| Error::SumsFileCorrupt(self.hasher.clone()))?;
-            let actual = self
-                .hasher
-                .hash(&mut self.reader.as_bufreader(name)?, name)?;
-            let name = name.to_owned();
-            if actual != expected {
-                Err(Error::HashInvalid {
-                    expected: expected.into(),
-                    actual,
-                    key: name,
-                })
-            } else {
-                Ok(name)
-            }
-        };
+    type Item = Result<HashSumFileItem<'a, R>, Error>;
 
+    fn next(&mut self) -> Option<Self::Item> {
         match self.buf.next()? {
-            Ok(x) => Some(verify_sum_line(&x)),
+            Ok(line) => {
+                let (hashsum, file_name) = match line.rsplit_once("  ") {
+                    Some((hashsum, file_name)) => (hashsum, file_name),
+                    None => return Some(Err(Error::SumsFileCorrupt(self.hasher.clone()))),
+                };
+
+                Some(Ok(HashSumFileItem {
+                    file_name: file_name.to_string(),
+                    hashsum: hashsum.to_string(),
+                    hasher: self.hasher.clone(),
+                    reader: self.reader,
+                }))
+            }
             Err(_) => Some(Err(Error::SumsFileCorrupt(self.hasher.clone()))),
         }
     }
 }
-impl<R> Iterator for HashSumNameLoader<'_, R>
-where
-    R: Read,
-{
+
+pub struct HashSumFileItem<'a, R> {
+    file_name: String,
+    hashsum: String,
+    hasher: Hasher,
+    reader: &'a dyn AsBufReader<R>,
+}
+
+impl<'a, R: Read> HashSumFileItem<'a, R> {
+    pub fn verify(&self) -> Result<(), Error> {
+        let hashsum = self.hasher.hash(
+            &mut self.reader.as_bufreader(&self.file_name)?,
+            &self.file_name,
+        )?;
+        if self.hashsum != hashsum {
+            return Err(Error::HashInvalid {
+                expected: self.hashsum.clone(),
+                actual: hashsum,
+                key: self.file_name.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn get_filename(&self) -> String {
+        self.file_name.clone()
+    }
+
+    pub fn get_hashsum(&self) -> String {
+        self.hashsum.clone()
+    }
+}
+
+/// Finds .nasl and .inc files within a given path.
+///
+/// If the base is set it returns the relative path otherwise the absolute path.
+/// When the relative path is returned it behaves exactly like a `HashSumNameLoader`.
+pub struct NaslFileFinder {
+    base: Option<String>,
+    paths: glob::Paths,
+}
+
+impl NaslFileFinder {
+    /// Initializes NaslFileFinder based on a base path.
+    pub fn new<P>(base: P, relative: bool) -> Self
+    where
+        P: AsRef<str>,
+    {
+        let paths = glob::glob(&format!("{}/**/*", base.as_ref())).expect("valid glob pattern");
+        Self {
+            base: if relative {
+                Some(base.as_ref().to_string())
+            } else {
+                None
+            },
+            paths,
+        }
+    }
+}
+
+impl Loader for NaslFileFinder {
+    fn load(&self, key: &str) -> Result<String, LoadError> {
+        let path = if let Some(base) = &self.base {
+            let path: std::path::PathBuf = base.into();
+            path.join(key)
+        } else {
+            key.into()
+        };
+
+        // unfortunately nasl is still in iso-8859-1
+        nasl_syntax::load_non_utf8_path(path.as_path())
+    }
+
+    fn root_path(&self) -> Result<String, LoadError> {
+        self.base.clone().ok_or_else(|| {
+            LoadError::Dirty("NaslFileFinder is not initialized with a base path".to_string())
+        })
+    }
+}
+
+impl Iterator for NaslFileFinder {
     type Item = Result<String, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_filename()
+        loop {
+            match self.paths.next() {
+                Some(result) => {
+                    let result = result.map_err(|e| {
+                        Error::LoadError(LoadError::Dirty(format!("Not a valid file: {}", e,)))
+                    });
+
+                    match result {
+                        Ok(f) => {
+                            let filename = f.display().to_string();
+                            if filename.ends_with(".nasl") | filename.ends_with(".inc") {
+                                let result = if let Some(base) = &self.base {
+                                    filename.trim_start_matches(base).trim_start_matches('/')
+                                } else {
+                                    &filename
+                                };
+                                return Some(Ok(result.to_owned()));
+                            }
+                        }
+                        Err(e) => return Some(Err(e)),
+                    }
+                }
+                None => return None,
+            }
+        }
+    }
+}
+
+impl FileNameLoader for NaslFileFinder {
+    fn next_filename(&mut self) -> Option<Result<String, Error>> {
+        self.next()
     }
 }

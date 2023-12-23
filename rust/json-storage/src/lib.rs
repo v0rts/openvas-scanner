@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Greenbone Networks GmbH
+// SPDX-FileCopyrightText: 2023 Greenbone AG
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -147,11 +147,20 @@ where
             }
         })
     }
+
+    fn retrieve_by_field(
+        &self,
+        _: &storage::Field,
+        _: &storage::Retrieve,
+    ) -> Result<Vec<(K, Vec<storage::Field>)>, StorageError> {
+        // currently not supported
+        Ok(vec![])
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     use storage::nvt::{Nvt, ACT};
 
@@ -165,11 +174,11 @@ mod tests {
             .join(".")
     }
 
-    fn generate_tags() -> HashMap<storage::nvt::TagKey, storage::nvt::TagValue> {
+    fn generate_tags() -> BTreeMap<storage::nvt::TagKey, storage::nvt::TagValue> {
         use storage::nvt::TagKey::*;
         use storage::nvt::TagValue;
         let ts = "2012-09-23 02:15:34 -0400";
-        HashMap::from([
+        BTreeMap::from([
             (Affected, TagValue::parse(Affected, "Affected").unwrap()),
             (CreationDate, TagValue::parse(CreationDate, ts).unwrap()),
             (

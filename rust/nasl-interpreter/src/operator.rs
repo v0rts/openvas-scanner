@@ -1,11 +1,13 @@
-// Copyright (C) 2023 Greenbone Networks GmbH
+// SPDX-FileCopyrightText: 2023 Greenbone AG
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 use nasl_syntax::{Statement, TokenCategory};
 use regex::Regex;
 
-use crate::{error::InterpretError, interpreter::InterpretResult, Interpreter, NaslValue};
+use crate::{error::InterpretError, interpreter::InterpretResult, Interpreter};
+
+use nasl_syntax::NaslValue;
 
 /// Is a trait to handle operator within nasl.
 pub(crate) trait OperatorExtension {
@@ -123,25 +125,27 @@ where
             TokenCategory::Star => self.execute(stmts, |a, b| num_expr!(* a b)),
             TokenCategory::Slash => self.execute(stmts, |a, b| num_expr!(/ a b)),
             TokenCategory::Percent => self.execute(stmts, |a, b| num_expr!(% a b)),
-            TokenCategory::LessLess => self.execute(stmts, |a, b| num_expr!(|a, b| a << b => a b)),
-            TokenCategory::GreaterGreater => {
-                self.execute(stmts, |a, b| num_expr!(|a, b| a >> b => a b))
-            }
+            TokenCategory::LessLess => self.execute(stmts, |a, b| num_expr!(<< a b)),
+            TokenCategory::GreaterGreater => self.execute(stmts, |a, b| num_expr!(>> a b)),
             // let left_casted = left as u32; (left_casted >> right) as i64
             TokenCategory::GreaterGreaterGreater => self.execute(
                 stmts,
-                |a, b| num_expr!(|a, b| ((a as u32) >> b) as i32 => a b),
+                //|a, b| num_expr!(|a, b| ((a as u32) >> b) as i32 => a b),
+                |a, b| {
+                    let (left, right) = as_i64(a, b);
+                    let result = ((left as u32) >> right) as i32;
+                    Ok(NaslValue::Number(result as i64))
+                },
             ),
             TokenCategory::Ampersand => self.execute(stmts, |a, b| num_expr!(& a b)),
             TokenCategory::Pipe => self.execute(stmts, |a, b| num_expr!(| a b)),
             TokenCategory::Caret => self.execute(stmts, |a, b| num_expr!(^ a b)),
-            TokenCategory::StarStar => self.execute(
-                stmts,
-                |a, b| num_expr!(|a, b| (a as u32).pow(b as u32) as i32 => a b),
-            ),
-            TokenCategory::Tilde => {
-                self.execute(stmts, |a, b| num_expr!(|a: i64, _: i64| !a => a b))
-            }
+            TokenCategory::StarStar => self.execute(stmts, |a, b| {
+                let (a, b) = as_i64(a, b);
+                let result = (a as u32).pow(b as u32);
+                Ok(NaslValue::Number(result as i64))
+            }),
+            TokenCategory::Tilde => self.execute(stmts, |a, _| Ok((!i64::from(&a)).into())),
             // string
             TokenCategory::EqualTilde => self.execute(stmts, match_regex),
             TokenCategory::BangTilde => self.execute(stmts, not_match_regex),
@@ -215,10 +219,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use nasl_syntax::parse;
 
-    use crate::{DefaultContext, Register};
-    use crate::{Interpreter, NaslValue};
+    use crate::*;
 
     macro_rules! create_test {
         ($($name:tt: $code:expr => $result:expr),*) => {
@@ -227,13 +229,13 @@ mod tests {
             #[test]
             fn $name() {
                 let mut register = Register::default();
-                let binding = DefaultContext::default();
-                let context = binding.as_context();
+                let binding = ContextBuilder::default();
+                let context = binding.build();
                 let mut interpreter = Interpreter::new(&mut register, &context);
-                let mut parser = parse($code).map(|x|
+                let parser = parse($code).map(|x|
                     interpreter.resolve(&x.expect("unexpected parse error"))
                 );
-                assert_eq!(parser.next(), Some(Ok($result)));
+                assert_eq!(parser.last(), Some(Ok($result)));
             }
         )*
         };
@@ -271,7 +273,6 @@ mod tests {
         less: "1 < 2;" => NaslValue::Boolean(true),
         greater_equal: "1 >= 1;" => NaslValue::Boolean(true),
         less_equal: "1 <= 1;" => NaslValue::Boolean(true),
-        xxxgonna_give_it_to_ya: "script_oid('hi') x 200;" => NaslValue::Null,
-        gonna_give_it_to_ya: "script_oid('hi') x 200;" => NaslValue::Null
+        x_gonna_give_it_ya: "function test() { }; test('hi') x 200;" => NaslValue::Null
     }
 }

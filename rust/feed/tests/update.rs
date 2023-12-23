@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2023 Greenbone AG
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 #[cfg(test)]
 mod test {
     use std::env;
@@ -22,7 +26,10 @@ mod test {
         };
         let loader = FSPluginLoader::new(&root);
         let verifier = HashSumNameLoader::sha256(&loader).expect("sha256sums should be available");
-        let files = verifier.filter_map(|x| x.ok()).collect::<Vec<String>>();
+        let files = verifier
+            .filter_map(|x| x.ok())
+            .map(|x| x.get_filename())
+            .collect::<Vec<String>>();
         assert_eq!(
             &files,
             &[

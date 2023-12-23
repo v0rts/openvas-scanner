@@ -1,22 +1,25 @@
-// Copyright (C) 2023 Greenbone Networks GmbH
+// SPDX-FileCopyrightText: 2023 Greenbone AG
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 use std::{collections::HashMap, io};
 
-use nasl_syntax::{IdentifierType, Statement, Statement::*, Token, TokenCategory};
+use nasl_syntax::{
+    IdentifierType, LoadError, NaslValue, Statement, Statement::*, Token, TokenCategory,
+};
 use storage::StorageError;
 
 use crate::{
     assign::AssignExtension,
     call::CallExtension,
-    context::{Context, ContextType, Register},
     declare::{DeclareFunctionExtension, DeclareVariableExtension},
     include::IncludeExtension,
     loop_extension::LoopExtension,
     operator::OperatorExtension,
-    InterpretError, InterpretErrorKind, LoadError, NaslValue,
+    InterpretError, InterpretErrorKind,
 };
+
+use nasl_builtin_utils::{Context, ContextType, Register};
 
 /// Used to interpret a Statement
 pub struct Interpreter<'a, K> {
@@ -81,7 +84,7 @@ where
     /// Interprets a Statement
     pub fn resolve(&mut self, statement: &Statement) -> InterpretResult {
         match statement {
-            Array(name, position) => {
+            Array(name, position, _) => {
                 let name = Self::identifier(name)?;
                 let val = self
                     .registrat
@@ -109,27 +112,29 @@ where
                     }
                 }
             }
-            Exit(stmt) => {
+            Exit(_, stmt, _) => {
                 let rc = self.resolve(stmt)?;
                 match rc {
                     NaslValue::Number(rc) => Ok(NaslValue::Exit(rc)),
                     _ => Err(InterpretError::unsupported(stmt, "numeric")),
                 }
             }
-            Return(stmt) => {
+            Return(_, stmt) => {
                 let rc = self.resolve(stmt)?;
                 Ok(NaslValue::Return(Box::new(rc)))
             }
-            Include(inc) => self.include(inc),
-            NamedParameter(_, _) => todo!(),
-            For(assignment, condition, update, body) => {
+            Include(_, inc, _) => self.include(inc),
+            NamedParameter(..) => {
+                unreachable!("named parameter should not be an executable statement.")
+            }
+            For(_, assignment, condition, update, body) => {
                 self.for_loop(assignment, condition, update, body)
             }
-            While(condition, body) => self.while_loop(condition, body),
-            Repeat(body, condition) => self.repeat_loop(body, condition),
-            ForEach(variable, iterable, body) => self.for_each_loop(variable, iterable, body),
-            FunctionDeclaration(name, args, exec) => self.declare_function(name, args, exec),
-            Primitive(token) => TryFrom::try_from(token),
+            While(_, condition, body) => self.while_loop(condition, body),
+            Repeat(_, body, condition) => self.repeat_loop(body, condition),
+            ForEach(_, variable, iterable, body) => self.for_each_loop(variable, iterable, body),
+            FunctionDeclaration(_, name, args, _, exec) => self.declare_function(name, args, exec),
+            Primitive(token) => TryFrom::try_from(token).map_err(|e: TokenCategory| e.into()),
             Variable(token) => {
                 let name: NaslValue = TryFrom::try_from(token)?;
                 match self.registrat.named(&name.to_string()) {
@@ -140,7 +145,7 @@ where
                     }
                 }
             }
-            Call(name, arguments) => self.call(name, arguments),
+            Call(name, arguments, _) => self.call(name, arguments),
             Declare(scope, stmts) => self.declare_variable(scope, stmts),
             // array creation
             Parameter(x) => {
@@ -153,7 +158,7 @@ where
             }
             Assign(cat, order, left, right) => self.assign(cat, order, left, right),
             Operator(sign, stmts) => self.operator(sign, stmts),
-            If(condition, if_block, else_block) => match self.resolve(condition) {
+            If(_, condition, if_block, _, else_block) => match self.resolve(condition) {
                 Ok(value) => {
                     if bool::from(value) {
                         return self.resolve(if_block);
@@ -164,7 +169,7 @@ where
                 }
                 Err(err) => Err(err),
             },
-            Block(blocks) => {
+            Block(_, blocks, _) => {
                 self.registrat.create_child(HashMap::default());
                 for stmt in blocks {
                     match self.resolve(stmt) {
@@ -188,10 +193,18 @@ where
                 Ok(NaslValue::Null)
             }
             NoOp(_) => Ok(NaslValue::Null),
-            EoF => todo!(),
-            AttackCategory(cat) => Ok(NaslValue::AttackCategory(*cat)),
-            Continue => Ok(NaslValue::Continue),
-            Break => Ok(NaslValue::Break),
+            EoF => Ok(NaslValue::Null),
+            AttackCategory(t) => { 
+                match t.category() {
+                    TokenCategory::Identifier(IdentifierType::ACT(cat)) => Ok(NaslValue::AttackCategory(*cat)),
+                    _ => unreachable!("AttackCategory must have ACT token but got {t:?}, this is an bug within the lexer.")
+
+                }
+
+                
+            },
+            Continue(_) => Ok(NaslValue::Continue),
+            Break(_) => Ok(NaslValue::Break),
         }
         .map_err(|e| {
             if e.origin.is_none() {

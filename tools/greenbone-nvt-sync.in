@@ -1,31 +1,13 @@
-#!/bin/sh
-# Copyright (C) 2009-2022 Greenbone Networks GmbH
+# SPDX-FileCopyrightText: 2023 Greenbone AG
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
-#
-# This program is free software; you can redistribute it and/or
-# modify it under the terms of the GNU General Public License
-# as published by the Free Software Foundation; either version 2
-# of the License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
 
-# This script updates the local Network Vulnerability Tests (NVTs) from the
-# Greenbone Security Feed (GSF) or the Greenbone Community Feed (GCF). 
+#!/bin/sh
 
 VERSION=@OPENVAS_VERSION@
 
-VERSION_MAYOR=`echo $VERSION | cut -d. -f1`
-VERSION_MINOR=`echo $VERSION | cut -d. -f2`
-[ $VERSION_MINOR -lt 10 ] && VERSION_MINOR="0$VERSION_MINOR"
-VERSION_SHORT="$VERSION_MAYOR.$VERSION_MINOR"
+# The feed version is not linked to the openvas version anymore.
+VERSION_SHORT="22.04"
 
 # SETTINGS
 # ========
@@ -523,6 +505,16 @@ do_feedversion () {
 
 do_sync ()
 {
+
+
+  echo "This script has been DEPRECATED in favor of greenbone-feed-sync"
+  echo "and will be removed in the next major version."
+  echo "It is strongly recommended to switch to the new script as soon as possible."
+  echo "The installation of the greenbone-nvt-sync script can be disabled"
+  echo "with cmake option -DINSTALL_OLD_SYNC_SCRIPT=OFF"
+  echo "For more information please visit https://github.com/greenbone/greenbone-feed-sync/"
+  echo ""
+
   do_self_test
   if [ $SELFTEST_FAIL -ne 0 ] ; then
     exit $SELFTEST_FAIL

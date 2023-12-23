@@ -1,173 +1,14 @@
-// Copyright (C) 2023 Greenbone Networks GmbH
+// SPDX-FileCopyrightText: 2023 Greenbone AG
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-use std::{convert::Infallible, fmt::Display, io};
+use std::{fmt::Display, io};
 
-use aes::cipher::block_padding::UnpadError;
-use digest::InvalidLength;
+use nasl_builtin_utils::error::FunctionErrorKind;
 use nasl_syntax::{Statement, SyntaxError, TokenCategory};
 use storage::StorageError;
 
-use crate::{ContextType, LoadError, NaslValue};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-/// Describtive kinds of cryptographic errors
-pub enum CryptErrorKind {
-    /// Unpadding error
-    Unpad,
-    /// Invalid key size
-    KeySize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-/// Describtive kind of error that can occur while calling a function
-pub enum FunctionErrorKind {
-    /// Function called with insufficient arguments
-    MissingPositionalArguments {
-        /// Expected amount of arguments
-        expected: usize,
-        /// Actual amount of arguments
-        got: usize,
-    },
-    /// Function called without required named arguments
-    MissingArguments(Vec<String>),
-    /// Wraps formatting error
-    FMTError(std::fmt::Error),
-    /// Wraps StorageError
-    StorageError(StorageError),
-    /// Wraps Infallible
-    Infallible(Infallible),
-    /// Wraps io::ErrorKind
-    IOError(io::ErrorKind),
-    /// Function was called with wrong arguments
-    WrongArgument(String),
-    /// Diagnostic string is informational and the second arg is the return value for the user
-    Diagnostic(String, Option<NaslValue>),
-    /// Generic error
-    GeneralError(String),
-    /// An error occurred while doing a crypt operation
-    CryptError(CryptErrorKind),
-}
-
-impl Display for FunctionErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FunctionErrorKind::MissingPositionalArguments { expected, got } => {
-                write!(f, "expected {expected} arguments but got {got}")
-            }
-            FunctionErrorKind::MissingArguments(x) => {
-                write!(f, "missing arguments: {}", x.join(", "))
-            }
-            FunctionErrorKind::FMTError(e) => write!(f, "{e}"),
-            FunctionErrorKind::StorageError(e) => write!(f, "{e}"),
-            FunctionErrorKind::Infallible(e) => write!(f, "{e}"),
-            FunctionErrorKind::IOError(e) => write!(f, "{e}"),
-            FunctionErrorKind::WrongArgument(x) => write!(f, "wrong argument: {x}"),
-            FunctionErrorKind::Diagnostic(x, _) => write!(f, "{x}"),
-            FunctionErrorKind::GeneralError(x) => write!(f, "{x}"),
-            FunctionErrorKind::CryptError(e) => write!(f, "cryptographic error: {e:?}"),
-        }
-    }
-}
-
-impl From<UnpadError> for FunctionErrorKind {
-    fn from(_: UnpadError) -> Self {
-        FunctionErrorKind::CryptError(CryptErrorKind::Unpad)
-    }
-}
-
-impl From<InvalidLength> for FunctionErrorKind {
-    fn from(_: InvalidLength) -> Self {
-        FunctionErrorKind::CryptError(CryptErrorKind::KeySize)
-    }
-}
-
-impl From<(&str, &str, &str)> for FunctionErrorKind {
-    fn from(value: (&str, &str, &str)) -> Self {
-        let (key, expected, got) = value;
-        FunctionErrorKind::WrongArgument(format!("Expected {key} to be {expected} but it is {got}"))
-    }
-}
-
-impl From<&str> for FunctionErrorKind {
-    fn from(value: &str) -> Self {
-        FunctionErrorKind::MissingArguments(vec![value.to_owned()])
-    }
-}
-
-impl From<(&str, &str)> for FunctionErrorKind {
-    fn from(value: (&str, &str)) -> Self {
-        let (expected, got) = value;
-        FunctionErrorKind::WrongArgument(format!("Expected {expected} but got {got}"))
-    }
-}
-
-impl From<(&str, &str, &NaslValue)> for FunctionErrorKind {
-    fn from(value: (&str, &str, &NaslValue)) -> Self {
-        let (key, expected, got) = value;
-        let got: &str = &got.to_string();
-        (key, expected, got).into()
-    }
-}
-
-impl From<(&str, &str, Option<&NaslValue>)> for FunctionErrorKind {
-    fn from(value: (&str, &str, Option<&NaslValue>)) -> Self {
-        match value {
-            (key, expected, Some(x)) => (key, expected, x).into(),
-            (key, expected, None) => (key, expected, "NULL").into(),
-        }
-    }
-}
-
-impl From<(&str, &str, Option<&ContextType>)> for FunctionErrorKind {
-    fn from(value: (&str, &str, Option<&ContextType>)) -> Self {
-        match value {
-            (key, expected, Some(ContextType::Value(x))) => (key, expected, x).into(),
-            (key, expected, Some(ContextType::Function(_, _))) => {
-                (key, expected, "function").into()
-            }
-            (key, expected, None) => (key, expected, "NULL").into(),
-        }
-    }
-}
-impl From<(&str, &NaslValue)> for FunctionErrorKind {
-    fn from(value: (&str, &NaslValue)) -> Self {
-        let (expected, got) = value;
-        let got: &str = &got.to_string();
-        (expected, got).into()
-    }
-}
-
-impl From<StorageError> for FunctionErrorKind {
-    fn from(se: StorageError) -> Self {
-        Self::StorageError(se)
-    }
-}
-
-impl From<Infallible> for FunctionErrorKind {
-    fn from(se: Infallible) -> Self {
-        Self::Infallible(se)
-    }
-}
-
-impl From<std::fmt::Error> for FunctionErrorKind {
-    fn from(fe: std::fmt::Error) -> Self {
-        Self::FMTError(fe)
-    }
-}
-
-impl From<io::ErrorKind> for FunctionErrorKind {
-    fn from(iek: io::ErrorKind) -> Self {
-        Self::IOError(iek)
-    }
-}
-
-impl From<io::Error> for FunctionErrorKind {
-    fn from(e: io::Error) -> Self {
-        Self::IOError(e.kind())
-    }
-}
+use nasl_syntax::LoadError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// An error that occurred while calling a function
@@ -207,7 +48,7 @@ pub struct InterpretError {
 /// Is used to give hints to the user how to react on an error while interpreting
 pub enum InterpretErrorKind {
     /// When returned context is a function when a value is required.
-    FunctioExpectedValue,
+    FunctionExpectedValue,
     /// When returned context is a value when a function is required.
     ValueExpectedFunction,
     /// When a specific type is expected
@@ -228,6 +69,7 @@ pub enum InterpretErrorKind {
     /// When the given key was not found in the context
     NotFound(String),
     /// A StorageError occurred
+    // FIXME rename to general error
     StorageError(StorageError),
     /// A LoadError occurred
     LoadError(LoadError),
@@ -242,7 +84,7 @@ pub enum InterpretErrorKind {
 impl Display for InterpretErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            InterpretErrorKind::FunctioExpectedValue => {
+            InterpretErrorKind::FunctionExpectedValue => {
                 write!(f, "expected a value but got a function")
             }
             InterpretErrorKind::ValueExpectedFunction => {
@@ -331,7 +173,7 @@ impl InterpretError {
         self.origin
             .as_ref()
             .and_then(|stmt| stmt.as_token())
-            .map(|x| x.position)
+            .map(|x| x.line_column)
             .unwrap_or_default()
     }
 
@@ -344,7 +186,7 @@ impl InterpretError {
 
     /// Creates an InterpreterError if the found context is a function although a value is required
     pub fn expected_value() -> Self {
-        Self::new(InterpretErrorKind::FunctioExpectedValue, None)
+        Self::new(InterpretErrorKind::FunctionExpectedValue, None)
     }
 
     /// Creates an InterpreterError if the found context is a value although a function is required
@@ -375,6 +217,12 @@ impl InterpretError {
     /// When a given regex is not parseable
     pub fn unparse_regex(rx: &str) -> Self {
         Self::new(InterpretErrorKind::InvalidRegex(rx.to_owned()), None)
+    }
+}
+
+impl From<TokenCategory> for InterpretError {
+    fn from(cat: TokenCategory) -> Self {
+        Self::new(InterpretErrorKind::WrongCategory(cat), None)
     }
 }
 
@@ -418,9 +266,21 @@ impl From<FunctionError> for InterpretError {
     fn from(fe: FunctionError) -> Self {
         match fe.kind {
             FunctionErrorKind::FMTError(fe) => fe.into(),
-            FunctionErrorKind::StorageError(se) => se.into(),
             FunctionErrorKind::IOError(ie) => ie.into(),
-            _ => Self::new(InterpretErrorKind::FunctionCallError(fe), None),
+            FunctionErrorKind::GeneralError(e) => {
+                Self::new(InterpretErrorKind::StorageError(e), None)
+            }
+            FunctionErrorKind::MissingPositionalArguments {
+                expected: _,
+                got: _,
+            }
+            | FunctionErrorKind::MissingArguments(_)
+            | FunctionErrorKind::Infallible(_)
+            | FunctionErrorKind::WrongArgument(_)
+            | FunctionErrorKind::Dirty(_)
+            | FunctionErrorKind::Diagnostic(_, _) => {
+                Self::new(InterpretErrorKind::FunctionCallError(fe), None)
+            }
         }
     }
 }

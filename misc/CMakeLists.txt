@@ -1,20 +1,6 @@
-# Copyright (C) 2010-2022 Greenbone Networks GmbH
+# SPDX-FileCopyrightText: 2023 Greenbone AG
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
-#
-# This program is free software; you can redistribute it and/or
-# modify it under the terms of the GNU General Public License
-# as published by the Free Software Foundation; either version 2
-# of the License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
 
 ## Dependency checks
 ##
@@ -28,6 +14,7 @@ endif (NOT PKG_CONFIG_FOUND)
 pkg_check_modules (GLIB REQUIRED glib-2.0>=2.42)
 pkg_check_modules (GLIB_JSON REQUIRED json-glib-1.0>=1.4.4)
 pkg_check_modules (GNUTLS REQUIRED gnutls>=3.6.4)
+pkg_check_modules (CURL REQUIRED libcurl>=7.74.0)
 
 pkg_check_modules (LIBGVM_BASE REQUIRED libgvm_base>=22.4)
 pkg_check_modules (LIBGVM_UTIL REQUIRED libgvm_util>=22.4)
@@ -82,7 +69,7 @@ add_definitions (-DOPENVAS_MISC_VERSION="${PROJECT_VERSION_STRING}")
 
 include_directories (${GLIB_INCLUDE_DIRS} ${GLIB_JSON_INCLUDE_DIRS}
                      ${LIBGVM_BASE_INCLUDE_DIRS}
-                     ${GNUTLS_INCLUDE_DIRS})
+                     ${GNUTLS_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS})
 
 # Library
 
@@ -106,7 +93,7 @@ set_target_properties (openvas_misc_shared PROPERTIES VERSION "${PROJECT_VERSION
 target_link_libraries (openvas_misc_shared LINK_PRIVATE
                        ${GNUTLS_LDFLAGS} ${UUID_LDFLAGS}
                        ${GLIB_LDFLAGS} ${GLIB_JSON_LDFLAGS}
-                       ${PCAP_LDFLAGS} ${LIBGVM_BOREAS_LDFLAGS}
+                       ${PCAP_LDFLAGS} ${LIBGVM_BOREAS_LDFLAGS} ${CURL_LDFLAGS}
                        ${LINKER_HARDENING_FLAGS})
 
 if (OPENVAS_STATE_DIR)
@@ -149,6 +136,7 @@ set (LINK_LIBS_FOR_TESTS cgreen
                        ${LIBGVM_BASE_LDFLAGS}
                        ${GLIB_LDFLAGS}
                        ${PCAP_LDFLAGS}
+                       ${CURL_LDFLAGS}
                        ${LINKER_HARDENING_FLAGS} ${CMAKE_THREAD_LIBS_INIT}
                        ${ALIVEDETECTION_TEST_LINKER_WRAP_OPTIONS})
 
@@ -175,9 +163,25 @@ target_include_directories (ipc-openvas-test PRIVATE ${CGREEN_INCLUDE_DIRS})
 target_link_libraries (ipc-openvas-test cgreen
                        ${GLIB_LDFLAGS}
                        ${GLIB_JSON_LDFLAGS}
+                       ${CURL_LDFLAGS}
                        ${LINKER_HARDENING_FLAGS})
 
 add_custom_target (tests-ipc-openvas
                   DEPENDS ipc-openvas-test)
+
+# lsc-tests
+add_executable (lsc-test EXCLUDE_FROM_ALL table_driven_lsc_tests.c kb_cache.c plugutils.c scan_id.c)
+add_test (lsc-test lsc-test)
+target_include_directories (lsc-test PRIVATE ${CGREEN_INCLUDE_DIRS})
+target_link_libraries (lsc-test cgreen
+                       ${LIBGVM_BASE_LDFLAGS}
+                       ${LIBGVM_UTIL_LDFLAGS}
+                       ${GLIB_LDFLAGS}
+                       ${GLIB_JSON_LDFLAGS}
+                       ${CURL_LDFLAGS}
+                       ${LINKER_HARDENING_FLAGS})
+
+add_custom_target (tests-lsc
+                  DEPENDS lsc-test)
 
 ## End

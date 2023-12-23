@@ -1,19 +1,7 @@
-/* Based on work Copyright (C) 2002 - 2004 Tenable Network Security
+/* SPDX-FileCopyrightText: 2023 Greenbone AG
+ * SPDX-FileCopyrightText: 2002-2004 Tenable Network Security
  *
  * SPDX-License-Identifier: GPL-2.0-only
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 /**
@@ -27,6 +15,7 @@
 
 #include "nasl_scanner_glue.h"
 
+#include "../misc/ipc_openvas.h"   /* for ipc_* */
 #include "../misc/network.h"       /* for getpts */
 #include "../misc/plugutils.h"     /* for plug_set_id */
 #include "../misc/support.h"       /* for the g_memdup2 workaround */
@@ -1076,6 +1065,54 @@ nasl_vendor_version (lex_ctxt *lexic)
   g_free (version);
 
   return retc;
+}
+
+/**
+ * @brief Communicate to the parent process that LSC data is ready
+ *        for use in the host kb
+ *
+ * @naslfn{update_table_driven_lsc_data}
+ *
+ * @naslnparam
+ * - @a pkg_list String containing the gathered package list.
+ * - @a os_release The OS release.
+ *
+ * @param[in] lexic  Lexical context of the NASL interpreter.
+ *
+ * @return NULL
+ */
+tree_cell *
+nasl_update_table_driven_lsc_data (lex_ctxt *lexic)
+{
+  struct script_infos *script_infos = lexic->script_infos;
+  ipc_data_t *lsc = NULL;
+  const char *json = NULL;
+  gchar *pkg_list = get_str_var_by_name (lexic, "pkg_list");
+  gchar *os_version = get_str_var_by_name (lexic, "os_release");
+
+  if (os_version == NULL || pkg_list == NULL)
+    {
+      g_warning ("%s: Missing data for running LSC", __func__);
+      return NULL;
+    }
+
+  plug_set_key (script_infos, "ssh/login/package_list_notus", ARG_STRING,
+                pkg_list);
+  plug_set_key (script_infos, "ssh/login/release_notus", ARG_STRING,
+                os_version);
+
+  lsc = ipc_data_type_from_lsc (TRUE);
+  if (!lsc)
+    return NULL;
+
+  json = ipc_data_to_json (lsc);
+  ipc_data_destroy (&lsc);
+  if (ipc_send (lexic->script_infos->ipc_context, IPC_MAIN, json, strlen (json))
+      < 0)
+    g_warning ("Unable to send the package list for LSC to the host process");
+
+  g_free ((void *) json);
+  return NULL;
 }
 
 /*-------------------------[ Reporting an open port ]---------------------*/

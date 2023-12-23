@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Greenbone Networks GmbH
+// SPDX-FileCopyrightText: 2023 Greenbone AG
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -290,6 +290,15 @@ pub trait RedisAddNvt: RedisWrapper {
             //self.kb.lpush(&key_name, prefs)?;
         }
 
+        // Stores the OID under the filename key. This key is currently used
+        // for the dependency autoload, where the filename is used to fetch the OID.
+        //
+        // TODO: since openvas get the oid by position and it is stored in the second position,
+        // for backward compatibility a dummy item (it is the plugin's upload timestamp)
+        // under the filename key is added.
+        // Once openvas is no longer used, the dummy item can be removed.
+        let key_name = format!("filename:{filename}");
+        self.rpush(&key_name, &["1", &oid])?;
         Ok(())
     }
 }
@@ -438,6 +447,15 @@ where
             }
         })
     }
+
+    fn retrieve_by_field(
+        &self,
+        _: &storage::Field,
+        _: &storage::Retrieve,
+    ) -> Result<Vec<(K, Vec<storage::Field>)>, StorageError> {
+        // currently not supported
+        Ok(vec![])
+    }
 }
 
 #[cfg(test)]
@@ -520,6 +538,7 @@ mod tests {
             ])),
             NVT(RequiredKeys(vec!["WMI/Apache/RootPath".to_owned()])),
             NVT(Oid("0.0.0.0.0.0.0.0.0.1".to_owned())),
+            NVT(FileName("test.nasl".to_owned())),
             NVT(Preference(NvtPreference {
                 id: Some(2),
                 class: PreferenceType::Password,
@@ -563,6 +582,14 @@ mod tests {
                                 enable_pw
                             );
                         }
+                        "filename:test.nasl" => {
+                            assert_eq!(values.len(), 2);
+                            let mut vals = values.clone();
+                            let oid = String::from_utf8(vals.pop().unwrap());
+                            assert_eq!(Ok("0.0.0.0.0.0.0.0.0.1".to_owned()), oid);
+                            let dummy = vals.pop().unwrap();
+                            assert_eq!(Ok("1".to_owned()), String::from_utf8(dummy));
+                        }
                         _ => panic!("{key} should not occur"),
                     }
                 }
@@ -570,6 +597,6 @@ mod tests {
                 Err(e) => panic!("{e:?}"),
             }
         }
-        assert_eq!(results, 3);
+        assert_eq!(results, 4);
     }
 }

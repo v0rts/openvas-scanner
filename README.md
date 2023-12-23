@@ -3,10 +3,9 @@
 # OpenVAS Scanner
 
 [![GitHub releases](https://img.shields.io/github/release/greenbone/openvas-scanner.svg)](https://github.com/greenbone/openvas-scanner/releases)
-[![Code Documentation Coverage](https://img.shields.io/codecov/c/github/greenbone/openvas-scanner.svg?label=Doc%20Coverage&logo=codecov)](https://codecov.io/gh/greenbone/openvas-scanner)
 [![Docker Pulls](https://img.shields.io/docker/pulls/greenbone/openvas-scanner.svg)](https://hub.docker.com/r/greenbone/openvas-scanner/)
 [![Docker Image Size](https://img.shields.io/docker/image-size/greenbone/openvas-scanner.svg?maxAge=2592000)](https://hub.docker.com/r/greenbone/openvas-scanner/)
-[![Build and test](https://github.com/greenbone/openvas-scanner/actions/workflows/ci-c.yml/badge.svg?branch=main)](https://github.com/greenbone/openvas-scanner/actions/workflows/ci-c.yml?query=branch%3Amain++)
+[![Build and test](https://github.com/greenbone/openvas-scanner/actions/workflows/build_and_test.yml/badge.svg?branch=main)](https://github.com/greenbone/openvas-scanner/actions/workflows/build_and_test.yml?query=branch%3Amain++)
 
 This is the OpenVAS Scanner of the Greenbone Community Edition.
 
@@ -64,14 +63,14 @@ issue to the Greenbone Support Portal.
 
 ## Maintainer
 
-This project is maintained by [Greenbone Networks GmbH](https://www.greenbone.net/).
+This project is maintained by [Greenbone AG](https://www.greenbone.net/).
 
 ## Contributing
 
 Your contributions are highly appreciated. Please [create a pull
-request](https://github.com/greenbone/openvas-scanner/pulls) on GitHub. Bigger
-changes need to be discussed with the development team via the [issues section
-at GitHub](https://github.com/greenbone/openvas-scanner/issues) first.
+request](https://github.com/greenbone/openvas-scanner/pulls) on GitHub.
+Remember to commit the contribution agreement as explained in [RELICENSING](https://github.com/greenbone/openvas-scanner/tree/main/RELICENSE) folder with your first PR.
+Bigger changes should be discussed with the development team via the [issues section at GitHub](https://github.com/greenbone/openvas-scanner/issues) first.
 
 ## License
 

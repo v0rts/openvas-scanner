@@ -6,3 +6,7 @@ nasl/nasl_grammar.tab.h
 testsuiterun.nasl
 .vscode
 .venv/
+*.bak
+assets/
+*.rsa
+*.pem

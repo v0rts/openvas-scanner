@@ -1,16 +1,22 @@
-// Copyright (C) 2023 Greenbone Networks GmbH
+// SPDX-FileCopyrightText: 2023 Greenbone AG
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
+
 #![doc = include_str!("../README.md")]
 mod error;
 mod feed_update;
 mod interpret;
+mod scanconfig;
 mod syntax_check;
 
 use configparser::ini::Ini;
 pub use error::*;
 
-use std::{io, path::PathBuf, process};
+use std::{
+    io::{self},
+    path::PathBuf,
+    process,
+};
 use storage::StorageError;
 
 use clap::{arg, value_parser, Arg, ArgAction, Command};
@@ -21,22 +27,29 @@ enum Commands {
     Syntax {
         /// The path for the file or dir to parse
         path: PathBuf,
-        /// Prints all parsed statements instead of just errors
-        verbose: bool,
         /// Disables printing of progress
         no_progress: bool,
+        /// Verbose output
+        verbose: bool,
     },
     /// Controls the feed
     Feed {
-        /// Prints the interpret filename and elapsed time for each
-        verbose: bool,
         /// The action to perform on a feed
         action: FeedAction,
     },
+    /// Executes a script
     Execute {
         db: Db,
         feed: Option<PathBuf>,
         script: String,
+        target: Option<String>,
+    },
+    /// Transforms a scan config to scan json for openvasd
+    ScanConfig {
+        feed: Option<PathBuf>,
+        config: Vec<String>,
+        port_list: Option<String>,
+        stdin: bool,
     },
 }
 
@@ -61,6 +74,8 @@ enum FeedAction {
         ///
         /// When it is skipped it will be obtained via `openvas -s`
         path: Option<PathBuf>,
+        /// If the signature check of the sha256sums file must be performed.
+        signature_check: Option<bool>,
     },
     /// Transforms the feed into stdout
     ///
@@ -70,18 +85,45 @@ enum FeedAction {
         /// When it is skipped it will be obtained via `openvas -s`
         path: Option<PathBuf>,
     },
+    /// Transpiles the feed based on a given ruleset.
+    ///
+    Transpile {
+        /// The path to the NASL plugins.
+        ///
+        path: PathBuf,
+        /// Describes the rules for changing the rules.
+        ///
+        /// The rules describe how to find a certain element and how to replace it.
+        /// Currently only toml in the following format is supported:
+        /// ```toml
+        /// [[cmds]]
+        ///
+        /// [cmds.find]
+        /// FunctionByName = "register_host_detail"
+        ///
+        /// [cmds.with]
+        /// Name = "add_host_detail"
+        /// ```
+        rules: PathBuf,
+        /// Prints the changed file names
+        verbose: bool,
+    },
 }
 
 trait RunAction<T> {
     type Error;
-    fn run(&self, verbose: bool) -> Result<T, Self::Error>;
+    fn run(&self) -> Result<T, Self::Error>;
 }
 
 impl RunAction<()> for FeedAction {
     type Error = CliError;
-    fn run(&self, verbose: bool) -> Result<(), Self::Error> {
+    fn run(&self) -> Result<(), Self::Error> {
         match self {
-            FeedAction::Update { redis: _, path } => {
+            FeedAction::Update {
+                redis: _,
+                path,
+                signature_check: _,
+            } => {
                 let update_config: FeedUpdateConfiguration =
                     self.as_config().map_err(|kind| CliError {
                         filename: String::new(),
@@ -94,7 +136,11 @@ impl RunAction<()> for FeedAction {
                             kind: e.into(),
                             filename: format!("{path:?}"),
                         })?;
-                feed_update::run(dispatcher, update_config.plugin_path, verbose)
+                feed_update::run(
+                    dispatcher,
+                    update_config.plugin_path,
+                    update_config.check_enabled,
+                )
             }
             FeedAction::Transform { path } => {
                 let transform_config: TransformConfiguration =
@@ -105,7 +151,7 @@ impl RunAction<()> for FeedAction {
 
                 let mut o = json_storage::ArrayWrapper::new(io::stdout());
                 let dispatcher = json_storage::NvtDispatcher::as_dispatcher(&mut o);
-                match feed_update::run(dispatcher, transform_config.plugin_path, verbose) {
+                match feed_update::run(dispatcher, transform_config.plugin_path, false) {
                     Ok(_) => o.end().map_err(StorageError::from).map_err(|se| CliError {
                         filename: "".to_string(),
                         kind: se.into(),
@@ -113,23 +159,78 @@ impl RunAction<()> for FeedAction {
                     Err(e) => Err(e),
                 }
             }
+            FeedAction::Transpile {
+                path,
+                rules,
+                verbose,
+            } => {
+                #[derive(serde::Deserialize, serde::Serialize)]
+                struct Wrapper {
+                    cmds: Vec<feed::transpile::ReplaceCommand>,
+                }
+
+                let rules = std::fs::read_to_string(rules).unwrap();
+                let rules: Wrapper = toml::from_str(&rules).unwrap();
+                let rules = rules.cmds;
+                let base = path.to_str().unwrap_or_default();
+                for r in feed::transpile::FeedReplacer::new(base, &rules) {
+                    let name = r.unwrap();
+                    if let Some((name, content)) = name {
+                        use std::io::Write;
+                        let mut f = std::fs::OpenOptions::new()
+                            .write(true)
+                            .truncate(true)
+                            .open(&name)
+                            .map_err(|e| {
+                                let kind =
+                                    CliErrorKind::Corrupt(format!("unable to open {name}: {e}"));
+                                CliError {
+                                    filename: name.clone(),
+                                    kind,
+                                }
+                            })?;
+                        f.write_all(content.as_bytes()).map_err(|e| {
+                            let kind =
+                                CliErrorKind::Corrupt(format!("unable to write {name}: {e}"));
+                            CliError {
+                                filename: name.clone(),
+                                kind,
+                            }
+                        })?;
+
+                        if *verbose {
+                            eprintln!("changed {name}");
+                        }
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
 
 impl RunAction<()> for Commands {
     type Error = CliError;
-    fn run(&self, verbose: bool) -> Result<(), Self::Error> {
+    fn run(&self) -> Result<(), Self::Error> {
         match self {
             Commands::Syntax {
                 path,
-                verbose,
                 no_progress,
+                verbose,
             } => syntax_check::run(path, *verbose, *no_progress),
-            Commands::Feed { verbose, action } => action.run(*verbose),
-            Commands::Execute { db, feed, script } => {
-                interpret::run(db, feed.clone(), script.to_string(), verbose)
-            }
+            Commands::Feed { action } => action.run(),
+            Commands::Execute {
+                db,
+                feed,
+                script,
+                target,
+            } => interpret::run(db, feed.clone(), script.to_string(), target.clone()),
+            Commands::ScanConfig {
+                feed,
+                config,
+                port_list,
+                stdin,
+            } => scanconfig::run(feed.as_ref(), config, port_list.as_ref(), *stdin),
         }
     }
 }
@@ -143,6 +244,7 @@ struct FeedUpdateConfiguration {
     /// Plugin path is required for either
     plugin_path: PathBuf,
     redis_url: String,
+    check_enabled: bool,
 }
 
 struct TransformConfiguration {
@@ -191,11 +293,17 @@ impl AsConfig<FeedUpdateConfiguration> for FeedAction {
             FeedAction::Update {
                 redis: Some(redis_url),
                 path: Some(plugin_path),
+                signature_check: Some(check_enabled),
             } => Ok(FeedUpdateConfiguration {
                 redis_url,
                 plugin_path,
+                check_enabled,
             }),
-            FeedAction::Update { redis, path } => {
+            FeedAction::Update {
+                redis,
+                path,
+                signature_check,
+            } => {
                 // This is only valid as long as we don't have a proper configuration file and rely on openvas.
                 let config = read_openvas_config()?;
                 let redis_url = {
@@ -222,9 +330,19 @@ impl AsConfig<FeedUpdateConfiguration> for FeedAction {
                         get_path_from_openvas(config)
                     }
                 };
+
+                let check_enabled = {
+                    if let Some(c) = signature_check {
+                        c
+                    } else {
+                        false
+                    }
+                };
+
                 Ok(FeedUpdateConfiguration {
                     plugin_path,
                     redis_url,
+                    check_enabled,
                 })
             }
             _ => unreachable!("only update can be converted to FeedUpdateConfiguration"),
@@ -243,8 +361,9 @@ fn get_path_from_openvas(config: Ini) -> PathBuf {
 fn main() {
     let matches = Command::new("nasl-cli")
         .version("1.0")
-        .about("Is CLI tool around NASL.")
-        .arg(arg!(-v --verbose ... "Prints more details while running").required(false).action(ArgAction::SetTrue))
+        .about("Is a CLI tool around NASL.")
+        .arg(arg!(-v --verbose ... "Prints more details while running").required(false).action(ArgAction::Count))
+        .arg(arg!(-vv --very-verbose ... "Prints even more details while running").required(false).action(ArgAction::SetTrue))
         .subcommand_required(true)
         .subcommand(
             Command::new("feed")
@@ -254,11 +373,19 @@ fn main() {
                 .about("Runs nasl scripts in description mode and updates data into redis")
                 .arg(arg!(-p --path <FILE> "Path to the feed.") .required(false)
                     .value_parser(value_parser!(PathBuf)))
+                .arg(arg!(-x --"signature-check" "Enable NASL signature check.") .required(false).action(ArgAction::SetTrue))
                 .arg(arg!(-r --redis <VALUE> "Redis url. Must either start `unix://` or `redis://`.").required(false))
                 )
                 .subcommand(Command::new("transform")
                 .about("Runs nasl scripts in description mode and returns it as a json array into stdout")
                 .arg(arg!(-p --path <FILE> "Path to the feed.") .required(false)
+                    .value_parser(value_parser!(PathBuf)))
+                )
+                .subcommand(Command::new("transpile")
+                .about("Transforms each nasl script and inc file based on the given rules.")
+                .arg(arg!(-p --path <FILE> "Path to the feed.") .required(false)
+                    .value_parser(value_parser!(PathBuf)))
+                .arg(arg!(-r --rules <FILE> "Path to transpiler rules.").required(true)
                     .value_parser(value_parser!(PathBuf)))
                 )
         )
@@ -277,27 +404,70 @@ When ID is used than a valid feed path must be given within the path parameter."
                 .arg(arg!(-p --path <FILE> "Path to the feed.") .required(false)
                     .value_parser(value_parser!(PathBuf)))
                 .arg(Arg::new("script").required(true))
+                .arg(arg!(-t --target <HOST> "Target to scan") .required(false))
         )
-        .get_matches();
+        .subcommand(
+            Command::new("scan-config")
+                .about("Transforms a scan-config xml to a scan json for openvasd.
+When piping a scan json it is enriched with the scan-config xml and may the portlist otherwise it will print a scan json without target or credentials.")
+                .arg(arg!(-p --path <FILE> "Path to the feed.") .required(false)
+                    .value_parser(value_parser!(PathBuf)))
+                .arg(Arg::new("scan-config").required(true).action(ArgAction::Append))
+                .arg(arg!(-i --input "Parses scan json from stdin.").required(false).action(ArgAction::SetTrue))
+                .arg(arg!(-l --portlist <FILE> "Path to the port list xml") .required(false))
+        )
+.get_matches();
     let verbose = matches
-        .get_one::<bool>("verbose")
+        .get_one::<u8>("verbose")
         .cloned()
         .unwrap_or_default();
+    let lv = if verbose > 1 {
+        tracing::Level::TRACE
+    } else if verbose > 0 {
+        tracing::Level::DEBUG
+    } else {
+        tracing::Level::INFO
+    };
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_max_level(lv)
+        .init();
     let command = match matches.subcommand() {
         Some(("feed", args)) => match args.subcommand() {
             Some(("update", args)) => {
                 let path = args.get_one::<PathBuf>("path").cloned();
                 let redis = args.get_one::<String>("redis").cloned();
+                let signature_check = args.get_one::<bool>("signature-check").cloned();
                 Commands::Feed {
-                    verbose,
-                    action: FeedAction::Update { redis, path },
+                    action: FeedAction::Update {
+                        redis,
+                        path,
+                        signature_check,
+                    },
                 }
             }
             Some(("transform", args)) => {
                 let path = args.get_one::<PathBuf>("path").cloned();
                 Commands::Feed {
-                    verbose,
                     action: FeedAction::Transform { path },
+                }
+            }
+
+            Some(("transpile", args)) => {
+                let path = match args.get_one("path").cloned() {
+                    Some(x) => x,
+                    None => unreachable!("path is set to required"),
+                };
+                let rules = match args.get_one("rules").cloned() {
+                    Some(x) => x,
+                    None => unreachable!("rules is set to required"),
+                };
+                Commands::Feed {
+                    action: FeedAction::Transpile {
+                        path,
+                        rules,
+                        verbose: verbose > 0,
+                    },
                 }
             }
             _ => unreachable!("subcommand_required prevents None"),
@@ -310,7 +480,7 @@ When ID is used than a valid feed path must be given within the path parameter."
             let quiet = args.get_one::<bool>("quiet").cloned().unwrap_or_default();
             Commands::Syntax {
                 path,
-                verbose,
+                verbose: verbose > 0,
                 no_progress: quiet,
             }
         }
@@ -320,16 +490,36 @@ When ID is used than a valid feed path must be given within the path parameter."
                 Some(path) => path,
                 _ => unreachable!("path is set to required"),
             };
+            let target = args.get_one::<String>("target").cloned();
+
             Commands::Execute {
                 db: Db::InMemory,
                 feed,
                 script,
+                target,
+            }
+        }
+        Some(("scan-config", args)) => {
+            let feed = args.get_one::<PathBuf>("path").cloned();
+            let config = args
+                .get_many::<String>("scan-config")
+                .expect("scan-config is required")
+                .cloned()
+                .collect();
+            let port_list = args.get_one::<String>("portlist").cloned();
+            tracing::debug!("port_list: {port_list:?}");
+            let stdin = args.get_one::<bool>("input").cloned().unwrap_or_default();
+            Commands::ScanConfig {
+                feed,
+                config,
+                port_list,
+                stdin,
             }
         }
         _ => unreachable!("subcommand_required prevents None"),
     };
 
-    match command.run(verbose) {
+    match command.run() {
         Ok(_) => {}
         Err(e) => match e.kind {
             CliErrorKind::StorageError(StorageError::UnexpectedData(x)) => match &x as &str {
@@ -337,7 +527,7 @@ When ID is used than a valid feed path must be given within the path parameter."
                 _ => panic!("Unexpected data within dispatcher: {x}"),
             },
             CliErrorKind::InterpretError(_) | CliErrorKind::SyntaxError(_) => {
-                eprintln!("script error, {e}");
+                tracing::warn!("script error, {e}");
                 std::process::exit(1);
             }
             _ => panic!("{e}"),
