@@ -8,7 +8,6 @@
     feature = "serde_support",
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[cfg_attr(feature = "bincode_support", derive(bincode::Encode, bincode::Decode))]
 pub struct Credential {
     /// Service to use for accessing a host
     pub service: Service,
@@ -23,7 +22,7 @@ impl Credential {
     /// Maps the password of the credential using the given closure.
     pub fn map_password<F, E>(self, f: F) -> Result<Self, E>
     where
-        F: FnOnce(String) -> Result<String, E>,
+        F: Fn(String) -> Result<String, E>,
     {
         Ok(Credential {
             service: self.service,
@@ -50,9 +49,22 @@ impl Default for Credential {
             credential_type: CredentialType::UP {
                 username: "root".to_string(),
                 password: "".to_string(),
+                privilege: None,
             },
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde_support",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+pub struct PrivilegeInformation {
+    #[cfg_attr(feature = "serde_support", serde(rename = "privilege_username"))]
+    pub username: String,
+    #[cfg_attr(feature = "serde_support", serde(rename = "privilege_password"))]
+    pub password: String,
 }
 
 /// Enum of available services
@@ -61,7 +73,6 @@ impl Default for Credential {
     feature = "serde_support",
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[cfg_attr(feature = "bincode_support", derive(bincode::Encode, bincode::Decode))]
 pub enum Service {
     #[cfg_attr(feature = "serde_support", serde(rename = "ssh"))]
     /// SSH, supports [UP](CredentialType::UP) and [USK](CredentialType::USK) as credential types
@@ -93,53 +104,53 @@ impl AsRef<str> for Service {
     feature = "serde_support",
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[cfg_attr(feature = "bincode_support", derive(bincode::Encode, bincode::Decode))]
 /// Enum representing the type of credentials.
 pub enum CredentialType {
     #[cfg_attr(feature = "serde_support", serde(rename = "up"))]
     /// User/password credentials.
     UP {
         /// The username for authentication.
-        #[cfg_attr(feature = "serde_support", serde(serialize_with = "crate::censor"))]
         username: String,
         /// The password for authentication.
-        #[cfg_attr(feature = "serde_support", serde(serialize_with = "crate::censor"))]
         password: String,
+        /// privilege credential only use for SSH service
+        #[cfg_attr(
+            feature = "serde_support",
+            serde(default, flatten, skip_serializing_if = "Option::is_none")
+        )]
+        privilege: Option<PrivilegeInformation>,
     },
     #[cfg_attr(feature = "serde_support", serde(rename = "usk"))]
     /// User/ssh-key credentials.
     USK {
         /// The username for authentication.
-        #[cfg_attr(feature = "serde_support", serde(serialize_with = "crate::censor"))]
         username: String,
         /// The password for authentication.
-        #[cfg_attr(feature = "serde_support", serde(serialize_with = "crate::censor"))]
         password: String,
         #[cfg_attr(feature = "serde_support", serde(rename = "private"))]
         /// The private key for authentication.
-        #[cfg_attr(feature = "serde_support", serde(serialize_with = "crate::censor"))]
         private_key: String,
+        /// privilege credential only use for SSH service
+        #[cfg_attr(
+            feature = "serde_support",
+            serde(default, flatten, skip_serializing_if = "Option::is_none")
+        )]
+        privilege: Option<PrivilegeInformation>,
     },
     #[cfg_attr(feature = "serde_support", serde(rename = "snmp"))]
     /// SNMP credentials.
     SNMP {
         /// The SNMP username.
-        #[cfg_attr(feature = "serde_support", serde(serialize_with = "crate::censor"))]
         username: String,
         /// The SNMP password.
-        #[cfg_attr(feature = "serde_support", serde(serialize_with = "crate::censor"))]
         password: String,
         /// The SNMP community string.
-        #[cfg_attr(feature = "serde_support", serde(serialize_with = "crate::censor"))]
         community: String,
         /// The SNMP authentication algorithm.
-        #[cfg_attr(feature = "serde_support", serde(serialize_with = "crate::censor"))]
         auth_algorithm: String,
         /// The SNMP privacy password.
-        #[cfg_attr(feature = "serde_support", serde(serialize_with = "crate::censor"))]
         privacy_password: String,
         /// The SNMP privacy algorithm.
-        #[cfg_attr(feature = "serde_support", serde(serialize_with = "crate::censor"))]
         privacy_algorithm: String,
     },
 }
@@ -148,21 +159,40 @@ impl CredentialType {
     /// Uses given closure to transform the password of the credential.
     pub fn map_password<F, E>(self, f: F) -> Result<Self, E>
     where
-        F: FnOnce(String) -> Result<String, E>,
+        F: Fn(String) -> Result<String, E>,
     {
         Ok(match self {
-            CredentialType::UP { username, password } => CredentialType::UP {
+            CredentialType::UP {
+                username,
+                password,
+                privilege,
+            } => CredentialType::UP {
                 username,
                 password: f(password)?,
+                privilege: match privilege {
+                    Some(p) => Some(PrivilegeInformation {
+                        username: p.username,
+                        password: f(p.password)?,
+                    }),
+                    None => None,
+                },
             },
             CredentialType::USK {
                 username,
                 password,
                 private_key,
+                privilege,
             } => CredentialType::USK {
                 username,
                 password: f(password)?,
-                private_key,
+                private_key: f(private_key)?,
+                privilege: match privilege {
+                    Some(p) => Some(PrivilegeInformation {
+                        username: p.username,
+                        password: f(p.password)?,
+                    }),
+                    None => None,
+                },
             },
             CredentialType::SNMP {
                 username,
@@ -176,7 +206,7 @@ impl CredentialType {
                 password: f(password)?,
                 community,
                 auth_algorithm,
-                privacy_password,
+                privacy_password: f(privacy_password)?,
                 privacy_algorithm,
             },
         })

@@ -30,10 +30,10 @@ mod tests {
     use nasl_syntax::logger::DefaultLogger;
     use nasl_syntax::parse;
     use nasl_syntax::NaslValue;
-    use storage::nvt::TagKey::*;
-    use storage::nvt::ACT::*;
-    use storage::nvt::{NVTField::*, NvtPreference, PreferenceType};
-    use storage::nvt::{NvtRef, TagValue};
+    use storage::item::TagKey::*;
+    use storage::item::ACT::*;
+    use storage::item::{NVTField::*, NvtPreference, PreferenceType};
+    use storage::item::{NvtRef, TagValue};
     use storage::DefaultDispatcher;
     use storage::Field::NVT;
     use storage::Retriever;
@@ -92,8 +92,9 @@ if(description)
         assert_eq!(results, Ok(NaslValue::Exit(23)));
         assert_eq!(
             storage
-                .retrieve(&key, &storage::Retrieve::NVT(None))
-                .unwrap(),
+                .retrieve(&key, storage::Retrieve::NVT(None))
+                .unwrap()
+                .collect::<Vec<_>>(),
             vec![
                 NVT(Oid("0.0.0.0.0.0.0.0.0.1".to_owned())),
                 NVT(FileName(key)),

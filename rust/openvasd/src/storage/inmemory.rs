@@ -1,5 +1,14 @@
+// SPDX-FileCopyrightText: 2024 Greenbone AG
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+use std::collections::HashSet;
+
 use super::*;
-use tokio::sync::RwLock;
+use nasl_interpreter::FSPluginLoader;
+use notus::loader::{hashsum::HashsumAdvisoryLoader, AdvisoryLoader};
+use storage::item::{ItemDispatcher, Nvt, PerItemDispatcher};
+use tokio::{sync::RwLock, task::JoinSet};
 
 #[derive(Clone, Debug, Default)]
 struct Progress {
@@ -16,24 +25,72 @@ struct Progress {
 #[derive(Debug)]
 pub struct Storage<E> {
     scans: RwLock<HashMap<String, Progress>>,
-    oids: RwLock<Vec<String>>,
-    hash: RwLock<String>,
+    nvts: Arc<RwLock<HashSet<Nvt>>>,
+    feed_version: Arc<RwLock<String>>,
+    hash: RwLock<Vec<FeedHash>>,
     client_id: RwLock<Vec<(ClientHash, String)>>,
-
     crypter: E,
+}
+
+struct Dispa {
+    nvts: Arc<RwLock<HashSet<Nvt>>>,
+    feed_version: Arc<RwLock<String>>,
+}
+
+impl ItemDispatcher<String> for Dispa {
+    fn dispatch_nvt(&self, nvt: Nvt) -> Result<(), storage::StorageError> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("Expected to be able to build a thread");
+        rt.block_on(async {
+            let mut nvts = self.nvts.write().await;
+            nvts.insert(nvt);
+        });
+        Ok(())
+    }
+
+    fn dispatch_feed_version(&self, version: String) -> Result<(), storage::StorageError> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("Expected to be able to build a thread");
+        rt.block_on(async {
+            let mut feed_version = self.feed_version.write().await;
+            *feed_version = version;
+        });
+        Ok(())
+    }
+
+    fn dispatch_advisory(
+        &self,
+        _: &str,
+        x: Box<Option<storage::NotusAdvisory>>,
+    ) -> Result<(), storage::StorageError> {
+        if let Some(x) = *x {
+            let nvt: Nvt = x.into();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("Expected to be able to build a thread");
+            rt.block_on(async {
+                let mut nvts = self.nvts.write().await;
+                nvts.insert(nvt);
+            });
+        }
+        Ok(())
+    }
 }
 
 impl<E> Storage<E>
 where
     E: crate::crypt::Crypt + Send + Sync + 'static,
 {
-    pub fn new(crypter: E) -> Self {
+    pub fn new(crypter: E, feeds: Vec<FeedHash>) -> Self {
         Self {
             scans: RwLock::new(HashMap::new()),
-            oids: RwLock::new(vec![]),
-            hash: RwLock::new(String::new()),
+            nvts: Arc::new(RwLock::new(HashSet::with_capacity(100000))),
+            hash: RwLock::new(feeds),
             client_id: RwLock::new(vec![]),
             crypter,
+            feed_version: Arc::new(RwLock::new(String::new())),
         }
     }
 
@@ -61,7 +118,13 @@ where
 
 impl Default for Storage<crate::crypt::ChaCha20Crypt> {
     fn default() -> Self {
-        Self::new(crate::crypt::ChaCha20Crypt::default())
+        Self::new(
+            crate::crypt::ChaCha20Crypt::default(),
+            vec![
+                FeedHash::nasl("/var/lib/openvas/feed"),
+                FeedHash::advisories("/var/lib/notus/feed"),
+            ],
+        )
     }
 }
 
@@ -115,7 +178,7 @@ where
     E: crate::crypt::Crypt + Send + Sync + 'static,
 {
     async fn insert_scan(&self, sp: models::Scan) -> Result<(), Error> {
-        let id = sp.scan_id.clone().unwrap_or_default();
+        let id = sp.scan_id.clone();
         let mut scans = self.scans.write().await;
         if let Some(prgs) = scans.get_mut(&id) {
             prgs.scan = sp;
@@ -146,21 +209,22 @@ impl<E> AppendFetchResult for Storage<E>
 where
     E: crate::crypt::Crypt + Send + Sync + 'static,
 {
-    async fn append_fetched_result(
-        &self,
-        id: &str,
-        (status, results): FetchResult,
-    ) -> Result<(), Error> {
+    async fn append_fetched_result(&self, results: Vec<ScanResults>) -> Result<(), Error> {
         let mut scans = self.scans.write().await;
-        let progress = scans.get_mut(id).ok_or(Error::NotFound)?;
-        progress.status = status;
-        let mut len = progress.results.len();
-        for mut result in results {
-            result.id = len;
-            len += 1;
-            let bytes = serde_json::to_vec(&result)?;
-            progress.results.push(self.crypter.encrypt(bytes).await);
+        for r in results {
+            let id = &r.id;
+            let progress = scans.get_mut(id).ok_or(Error::NotFound)?;
+            progress.status = r.status;
+            let mut len = progress.results.len();
+            let results = r.results;
+            for mut result in results {
+                result.id = len;
+                len += 1;
+                let bytes = serde_json::to_vec(&result)?;
+                progress.results.push(self.crypter.encrypt(bytes).await);
+            }
         }
+
         Ok(())
     }
 }
@@ -174,9 +238,7 @@ where
         let scans = self.scans.read().await;
         let mut result = Vec::with_capacity(scans.len());
         for (_, progress) in scans.iter() {
-            if let Some(id) = progress.scan.scan_id.as_ref() {
-                result.push(id.clone());
-            }
+            result.push(progress.scan.scan_id.clone());
         }
         Ok(result)
     }
@@ -229,28 +291,139 @@ where
     }
 }
 
-#[async_trait]
-impl<E> OIDStorer for Storage<E>
+impl From<feed::VerifyError> for Error {
+    fn from(value: feed::VerifyError) -> Self {
+        Error::Storage(Box::new(value))
+    }
+}
+impl From<feed::UpdateError> for Error {
+    fn from(value: feed::UpdateError) -> Self {
+        Error::Storage(Box::new(value))
+    }
+}
+impl From<notus::error::Error> for Error {
+    fn from(value: notus::error::Error) -> Self {
+        Error::Storage(Box::new(value))
+    }
+}
+
+impl<E> Storage<E>
 where
     E: Send + Sync + 'static,
 {
-    async fn push_oids(&self, hash: String, mut oids: Vec<String>) -> Result<(), Error> {
-        let mut o = self.oids.write().await;
-        o.clear();
-        o.append(&mut oids);
-        o.shrink_to_fit();
-        let mut f = self.hash.write().await;
-        *f = hash;
+    async fn update_notus_feed(p: PathBuf, nvts: Arc<RwLock<HashSet<Nvt>>>) -> Result<(), Error> {
+        let notus_advisories_path = p;
+
+        tokio::task::spawn_blocking(move || {
+            tracing::debug!("starting notus feed update");
+            let loader = FSPluginLoader::new(notus_advisories_path);
+            let advisories_files = HashsumAdvisoryLoader::new(loader.clone())?;
+            for filename in advisories_files.get_advisories()?.iter() {
+                let advisories = advisories_files.load_advisory(filename)?;
+
+                for adv in advisories.advisories {
+                    let data = models::VulnerabilityData {
+                        adv,
+                        famile: advisories.family.clone(),
+                        filename: filename.to_owned(),
+                    };
+                    let nvt: Nvt = data.into();
+
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .build()
+                        .expect("Expected to be able to build a thread");
+                    rt.block_on(async {
+                        let mut nvts = nvts.write().await;
+                        nvts.insert(nvt);
+                    });
+                }
+            }
+            tracing::debug!("finished notus feed update");
+            Ok(())
+        })
+        .await
+        .expect("notus handler to be executed.")
+    }
+
+    async fn update_nasl_feed(
+        p: PathBuf,
+        nvts: Arc<RwLock<HashSet<Nvt>>>,
+        feed_version: Arc<RwLock<String>>,
+    ) -> Result<(), Error> {
+        let nasl_feed_path = p;
+
+        tokio::task::spawn_blocking(move || {
+            tracing::debug!("starting nasl feed update");
+            let oversion = "0.1";
+            let loader = FSPluginLoader::new(nasl_feed_path);
+            let verifier = feed::HashSumNameLoader::sha256(&loader)?;
+
+            let store = PerItemDispatcher::new(Dispa { nvts, feed_version });
+            let mut fu = feed::Update::init(oversion, 5, loader.clone(), store, verifier);
+            if let Some(x) = fu.find_map(|x| x.err()) {
+                Err(Error::from(x))
+            } else {
+                tracing::debug!("finished nasl feed update");
+                Ok(())
+            }
+        })
+        .await
+        .expect("nasl feed handler to be executed.")
+    }
+}
+
+#[async_trait]
+impl<E> NVTStorer for Storage<E>
+where
+    E: Send + Sync + 'static,
+{
+    async fn synchronize_feeds(&self, hash: Vec<FeedHash>) -> Result<(), Error> {
+        tracing::debug!("starting feed update");
+
+        {
+            let mut h = self.hash.write().await;
+            for ha in h.iter_mut() {
+                if let Some(nh) = hash.iter().find(|x| x.typus == ha.typus) {
+                    ha.hash = nh.hash.clone()
+                }
+            }
+        }
+
+        let mut updates = JoinSet::new();
+        for h in hash {
+            let path = h.path;
+            match h.typus {
+                FeedType::NASL => {
+                    _ = updates.spawn(Self::update_nasl_feed(
+                        path,
+                        self.nvts.clone(),
+                        self.feed_version.clone(),
+                    ))
+                }
+                FeedType::Advisories => {
+                    _ = updates.spawn(Self::update_notus_feed(path, self.nvts.clone()))
+                }
+                FeedType::Products => {}
+            };
+        }
+        while let Some(f) = updates.join_next().await {
+            f.unwrap()?
+        }
+
+        tracing::debug!("finished feed update.");
+
         Ok(())
     }
 
-    async fn oids(&self) -> Result<Box<dyn Iterator<Item = String> + Send>, Error> {
-        let o = self.oids.read().await.clone();
-        Ok(Box::new(o.into_iter()))
+    async fn vts<'a>(
+        &self,
+    ) -> Result<Box<dyn Iterator<Item = storage::item::Nvt> + Send + 'a>, Error> {
+        let o = self.nvts.read().await.clone().into_iter();
+        Ok(Box::new(o))
     }
 
-    async fn feed_hash(&self) -> String {
-        self.hash.read().await.clone()
+    async fn feed_hash(&self) -> Vec<FeedHash> {
+        self.hash.read().await.to_vec()
     }
 }
 
@@ -298,10 +471,10 @@ mod tests {
     async fn store_delete_scan() {
         let storage = Storage::default();
         let scan = Scan::default();
-        let id = scan.scan_id.clone().unwrap_or_default();
+        let id = scan.scan_id.clone();
         storage.insert_scan(scan).await.unwrap();
         let (retrieved, _) = storage.get_scan(&id).await.unwrap();
-        assert_eq!(retrieved.scan_id.unwrap_or_default(), id);
+        assert_eq!(retrieved.scan_id, id);
         storage.remove_scan(&id).await.unwrap();
     }
 
@@ -313,27 +486,28 @@ mod tests {
             credential_type: models::CredentialType::UP {
                 username: "test".to_string(),
                 password: "test".to_string(),
+                privilege: None,
             },
             ..Default::default()
         };
 
         scan.target.credentials = vec![pw];
 
-        let id = scan.scan_id.clone().unwrap_or_default();
+        let id = scan.scan_id.clone();
         storage.insert_scan(scan).await.unwrap();
         let (retrieved, _) = storage.get_scan(&id).await.unwrap();
-        assert_eq!(retrieved.scan_id.unwrap_or_default(), id);
+        assert_eq!(retrieved.scan_id, id);
         assert_ne!(retrieved.target.credentials[0].password(), "test");
 
         let (retrieved, _) = storage.get_decrypted_scan(&id).await.unwrap();
-        assert_eq!(retrieved.scan_id.unwrap_or_default(), id);
+        assert_eq!(retrieved.scan_id, id);
         assert_eq!(retrieved.target.credentials[0].password(), "test");
     }
 
     async fn store_scan(storage: &Storage<crypt::ChaCha20Crypt>) -> String {
         let mut scan = Scan::default();
         let id = uuid::Uuid::new_v4().to_string();
-        scan.scan_id = Some(id.clone());
+        scan.scan_id = id.clone();
         storage.insert_scan(scan).await.unwrap();
         id
     }
@@ -352,11 +526,15 @@ mod tests {
     async fn append_results() {
         let storage = Storage::default();
         let scan = Scan::default();
-        let id = scan.scan_id.clone().unwrap_or_default();
+        let id = scan.scan_id.clone();
         storage.insert_scan(scan).await.unwrap();
-        let fetch_result = (models::Status::default(), vec![models::Result::default()]);
+        let fetch_result = ScanResults {
+            id: id.clone(),
+            status: models::Status::default(),
+            results: vec![models::Result::default()],
+        };
         storage
-            .append_fetched_result(&id, fetch_result)
+            .append_fetched_result(vec![fetch_result])
             .await
             .unwrap();
         let results: Vec<_> = storage

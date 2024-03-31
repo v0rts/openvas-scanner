@@ -10,12 +10,14 @@ use super::{credential::Credential, port::Port};
     feature = "serde_support",
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[cfg_attr(feature = "bincode_support", derive(bincode::Encode, bincode::Decode))]
 pub struct Target {
     /// List of hosts to scan
     pub hosts: Vec<String>,
     /// List of ports used for scanning
     pub ports: Vec<Port>,
+    #[cfg_attr(feature = "serde_support", serde(default))]
+    /// List of excluded hosts to scan
+    pub excluded_hosts: Vec<String>,
     #[cfg_attr(feature = "serde_support", serde(default))]
     /// List of credentials used to get access to a system
     pub credentials: Vec<Credential>,
@@ -40,12 +42,11 @@ pub struct Target {
     feature = "serde_support",
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[cfg_attr(feature = "bincode_support", derive(bincode::Encode, bincode::Decode))]
 #[cfg_attr(feature = "serde_support", serde(rename_all = "snake_case"))]
 pub enum AliveTestMethods {
-    Icmp,
-    TcpSyn,
-    TcpAck,
-    Arp,
-    ConsiderAlive,
+    TcpAck = 0x01,
+    Icmp = 0x02,
+    Arp = 0x04,
+    ConsiderAlive = 0x08,
+    TcpSyn = 0x10,
 }

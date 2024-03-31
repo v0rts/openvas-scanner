@@ -2,42 +2,6 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-use nasl_syntax::{parse, Statement};
-
-use crate::{error::InterpretError, interpreter::InterpretResult, Interpreter};
-
-use nasl_syntax::NaslValue;
-
-/// Is a trait to declare include functionality
-pub(crate) trait IncludeExtension {
-    fn include(&mut self, name: &Statement) -> InterpretResult;
-}
-
-impl<'a, K> IncludeExtension for Interpreter<'a, K>
-where
-    K: AsRef<str>,
-{
-    fn include(&mut self, name: &Statement) -> InterpretResult {
-        match self.resolve(name)? {
-            NaslValue::String(key) => {
-                let code = self.ctxconfigs.loader().load(&key)?;
-                let mut inter = Interpreter::new(self.registrat, self.ctxconfigs);
-                let result = parse(&code)
-                    .map(|parsed| match parsed {
-                        Ok(stmt) => inter.resolve(&stmt),
-                        Err(err) => Err(InterpretError::include_syntax_error(&key, err)),
-                    })
-                    .find(|e| e.is_err());
-                match result {
-                    Some(e) => e,
-                    None => Ok(NaslValue::Null),
-                }
-            }
-            _ => Err(InterpretError::unsupported(name, "string")),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -56,7 +20,7 @@ mod tests {
                 .ok_or_else(|| LoadError::NotFound(String::default()))
         }
         fn root_path(&self) -> Result<std::string::String, nasl_syntax::LoadError> {
-           Ok(String::default()) 
+            Ok(String::default())
         }
     }
 

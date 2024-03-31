@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-use std::fmt::Display;
+use std::{fmt::Display, str::FromStr};
 
 use super::host_info::HostInfo;
 
@@ -12,7 +12,6 @@ use super::host_info::HostInfo;
     feature = "serde_support",
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[cfg_attr(feature = "bincode_support", derive(bincode::Encode, bincode::Decode))]
 pub struct Status {
     /// Timestamp for the start of a scan
     pub start_time: Option<u32>,
@@ -41,7 +40,6 @@ impl Status {
     derive(serde::Serialize, serde::Deserialize)
 )]
 #[cfg_attr(feature = "serde_support", serde(rename_all = "snake_case"))]
-#[cfg_attr(feature = "bincode_support", derive(bincode::Encode, bincode::Decode))]
 pub enum Phase {
     /// A scan has been stored but not started yet
     #[default]
@@ -61,6 +59,22 @@ pub enum Phase {
 impl Phase {
     pub fn is_running(&self) -> bool {
         matches!(self, Self::Running | Self::Requested)
+    }
+}
+
+impl FromStr for Phase {
+    type Err = ();
+
+    fn from_str(status: &str) -> Result<Phase, ()> {
+        match status {
+            "requested" => Ok(Phase::Requested),
+            "running" => Ok(Phase::Running),
+            "stopped" => Ok(Phase::Stopped),
+            "failed" => Ok(Phase::Failed),
+            "succeeded" => Ok(Phase::Succeeded),
+            "stored" => Ok(Phase::Stored),
+            _ => Err(()),
+        }
     }
 }
 

@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+mod advisories;
 mod credential;
 mod host_info;
 mod parameter;
@@ -10,11 +11,13 @@ mod product;
 mod result;
 mod scan;
 mod scan_action;
+pub mod scanner;
 mod scanner_preference;
 mod status;
 mod target;
 mod vt;
 
+pub use advisories::*;
 pub use credential::*;
 pub use host_info::*;
 pub use parameter::*;
@@ -28,17 +31,7 @@ pub use status::*;
 pub use target::*;
 pub use vt::*;
 
-use serde::Serializer;
-
-fn censor<S, T>(_: &T, serializer: S) -> std::result::Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_str("***")
-}
-
 #[cfg(test)]
-//#[cfg(feature = "serde_support")]
 mod tests {
 
     use super::scan::Scan;
@@ -79,6 +72,9 @@ mod tests {
       "2001:db8:0000:0000:0000:0000:0000:0001-00ff",
       "2002::1234:abcd:ffff:c0a8:101/64",
       "examplehost"
+    ],
+    "excluded_hosts": [
+      "192.168.0.14"
     ],
     "ports": [
       {
@@ -176,9 +172,6 @@ mod tests {
 }
 "#;
         // tests that it doesn't panic when parsing the json
-        let s: Scan = serde_json::from_str(json_str).unwrap();
-
-        let _b = bincode::encode_to_vec(s, bincode::config::standard()).unwrap();
-        //let _: Target = bincode::deserialize(&b).unwrap();
+        let _: Scan = serde_json::from_str(json_str).unwrap();
     }
 }

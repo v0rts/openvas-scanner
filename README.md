@@ -5,7 +5,7 @@
 [![GitHub releases](https://img.shields.io/github/release/greenbone/openvas-scanner.svg)](https://github.com/greenbone/openvas-scanner/releases)
 [![Docker Pulls](https://img.shields.io/docker/pulls/greenbone/openvas-scanner.svg)](https://hub.docker.com/r/greenbone/openvas-scanner/)
 [![Docker Image Size](https://img.shields.io/docker/image-size/greenbone/openvas-scanner.svg?maxAge=2592000)](https://hub.docker.com/r/greenbone/openvas-scanner/)
-[![Build and test](https://github.com/greenbone/openvas-scanner/actions/workflows/build_and_test.yml/badge.svg?branch=main)](https://github.com/greenbone/openvas-scanner/actions/workflows/build_and_test.yml?query=branch%3Amain++)
+[![CI](https://github.com/greenbone/openvas-scanner/actions/workflows/control.yml/badge.svg?branch=main)](https://github.com/greenbone/openvas-scanner/actions/workflows/control.yml?query=branch%3Amain)
 
 This is the OpenVAS Scanner of the Greenbone Community Edition.
 
@@ -35,6 +35,12 @@ If you are not familiar or comfortable building from source code, we recommend
 that you use the Greenbone Enterprise TRIAL, a prepared virtual
 machine with a readily available setup. Information regarding the virtual machine
 is available at <https://www.greenbone.net/en/testnow>.
+
+## Rust Implementation
+
+This repository also consists of a [rust project](rust/README.md) aiming to replace the current scanner stack
+(openvas-scanner, ospd-openvas, notus-scanner). It simplifies the use of the scanner and centralizes
+everything needed for scanning. Currently it uses the openvas-scanner as scan engine.
 
 ## Docker, [Greenbone Community Containers](https://greenbone.github.io/docs/latest/22.4/container/)
 

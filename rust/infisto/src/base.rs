@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2024 Greenbone AG
+//
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! The base module contains the basic building blocks for the file store.
 
 use std::{
@@ -165,9 +169,7 @@ impl IndexedFileStorer {
 
     fn store_index(&self, index: &[Index], id: &str) -> Result<(), Error> {
         let fn_name = format!("{}.idx", id);
-        let config = bincode::config::standard();
-        let to_store =
-            bincode::serde::encode_to_vec(index, config).map_err(|_| Error::Serialize)?;
+        let to_store = rmp_serde::to_vec(index).map_err(|_e| Error::Serialize)?;
 
         let path = Path::new(&self.base).join(fn_name);
         let mut file = std::fs::OpenOptions::new()
@@ -219,9 +221,7 @@ impl IndexedFileStorer {
             .map_err(|e| e.kind())
             .map_err(Error::Read)?;
 
-        let config = bincode::config::standard();
-        let (index, _) =
-            bincode::serde::decode_from_slice(&buffer, config).map_err(|_| Error::Serialize)?;
+        let index = rmp_serde::from_slice(&buffer).map_err(|_e| Error::Serialize)?;
         Ok(index)
     }
 
@@ -246,7 +246,6 @@ impl IndexedFileStorer {
         let fn_name = format!("{}.dat", key);
         let path = Path::new(&self.base).join(fn_name);
         let mut file = std::fs::OpenOptions::new()
-            .write(true)
             .append(true)
             .open(path)
             .map_err(|e| e.kind())
@@ -311,7 +310,8 @@ impl IndexedByteStorage for IndexedFileStorer {
         if data.is_empty() {
             return Ok(());
         }
-        match self.load_index(key) {
+        let result = self.load_index(key);
+        match result {
             Ok(i) => self.append_all_index(key, &i, data).map(|_| ()),
             Err(Error::FileOpen(ioe)) => match ioe {
                 std::io::ErrorKind::NotFound => {
@@ -474,7 +474,8 @@ impl IndexedByteStorage for CachedIndexFileStorer {
         let (ci, result) = if let Some((ci, fi)) = self.find_index(key) {
             (ci, self.base.append_all_index(key, fi, data)?)
         } else {
-            match self.base.load_index(key) {
+            let result = self.base.load_index(key);
+            match result {
                 Ok(i) => (
                     self.cache.len() - 1,
                     self.base.append_all_index(key, &i, data)?,
@@ -488,6 +489,7 @@ impl IndexedByteStorage for CachedIndexFileStorer {
                                 .append_all_index(key, &initial_index, &data[1..])?;
                         (self.cache.len() - 1, end_index)
                     }
+                    std::io::ErrorKind::NotFound if data.is_empty() => (0, vec![]),
                     _ => return Err(Error::FileOpen(ioe)),
                 },
                 Err(e) => return Err(e),

@@ -4,58 +4,71 @@
 
 use std::sync::Arc;
 
-use crate::feed::FeedIdentifier;
+use models::scanner::Scanner;
+
+use crate::{
+    feed::FeedIdentifier,
+    storage::{FeedHash, NVTStorer as _},
+};
 
 use super::context::Context;
 
+async fn changed_hash(signature_check: bool, feeds: &[FeedHash]) -> Result<Vec<FeedHash>, ()> {
+    let mut result = Vec::with_capacity(feeds.len());
+    for h in feeds {
+        if signature_check {
+            if let Err(err) = feed::verify::check_signature(&h.path) {
+                tracing::warn!(
+                    sumsfile=%h.path.display(),
+                    error=%err,
+                    "Signature is incorrect, skipping",
+                );
+                return Err(());
+            }
+        }
+
+        let path = h.path.clone();
+        let hash = tokio::task::spawn_blocking(move || match FeedIdentifier::sumfile_hash(path) {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!(%e, "Failed to compute sumfile hash");
+                "".to_string()
+            }
+        })
+        .await
+        .unwrap();
+        if hash != h.hash {
+            let mut nh = h.clone();
+            nh.hash = hash;
+            result.push(nh);
+        }
+    }
+    Ok(result)
+}
+
 pub async fn fetch<S, DB>(ctx: Arc<Context<S, DB>>)
 where
-    S: super::Scanner + 'static + std::marker::Send + std::marker::Sync,
+    S: Scanner + 'static + std::marker::Send + std::marker::Sync,
     DB: crate::storage::Storage + 'static + std::marker::Send + std::marker::Sync,
 {
     tracing::debug!("Starting VTS synchronization loop");
     if let Some(cfg) = &ctx.feed_config {
-        let interval = cfg.verify_interval;
+        let interval = cfg.check_interval;
         let signature_check = cfg.signature_check;
         loop {
-            let path = cfg.path.clone();
             if *ctx.abort.read().unwrap() {
                 tracing::trace!("aborting");
                 break;
             };
-            let last_hash = ctx.db.feed_hash().await;
-            let result = tokio::task::spawn_blocking(move || {
-                let hash = match FeedIdentifier::sumfile_hash(&path) {
-                    Ok(h) => h,
-                    Err(e) => {
-                        tracing::warn!("Failed to compute sumfile hash: {e:?}");
-                        "".to_string()
+            let last_hash = ctx.scheduler.feed_hash().await;
+            if let Ok(nh) = changed_hash(signature_check, &last_hash).await {
+                if !nh.is_empty() {
+                    if let Err(err) = ctx.scheduler.synchronize_feeds(nh).await {
+                        tracing::warn!(%err, "Unable to sync feed")
                     }
-                };
+                }
+            }
 
-                if last_hash.is_empty() || last_hash.clone() != hash {
-                    FeedIdentifier::from_feed(&path, signature_check).map(|x| (hash, x))
-                } else {
-                    Ok((String::new(), vec![]))
-                }
-            })
-            .await
-            .unwrap();
-            match result {
-                Ok((hash, oids)) => {
-                    if !oids.is_empty() {
-                        match ctx.db.push_oids(hash.clone(), oids).await {
-                            Ok(_) => {
-                                tracing::debug!("updated feed {hash}")
-                            }
-                            Err(e) => {
-                                tracing::warn!("unable to fetch new oids, leaving the old: {e:?}")
-                            }
-                        }
-                    }
-                }
-                Err(e) => tracing::warn!("unable to fetch new oids, leaving the old: {e:?}"),
-            };
             tokio::time::sleep(interval).await;
         }
     }

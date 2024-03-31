@@ -5,7 +5,7 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 
-pub mod nvt;
+pub mod item;
 mod retrieve;
 pub use retrieve::*;
 pub mod time;
@@ -14,10 +14,10 @@ use std::{
     fmt::Display,
     io,
     marker::PhantomData,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, PoisonError, RwLock},
 };
 
-use nvt::NVTField;
+use item::NVTField;
 use types::Primitive;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -26,6 +26,7 @@ use types::Primitive;
     derive(serde::Serialize, serde::Deserialize),
     serde(rename_all = "snake_case")
 )]
+
 /// Structure to hold a knowledge base item
 pub struct Kb {
     /// Key of the knowledge base entry
@@ -39,6 +40,9 @@ pub struct Kb {
     pub expire: Option<u64>,
 }
 
+/// Redefine Vulnerability so that other libraries using that don't have to include models
+pub type NotusAdvisory = models::VulnerabilityData;
+
 /// Describes various Fields of supported items.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Field {
@@ -46,6 +50,8 @@ pub enum Field {
     NVT(NVTField),
     /// Knowledge Base item
     KB(Kb),
+    /// Notus advisories, when None then the impl can assume finish
+    NotusAdvisory(Box<Option<NotusAdvisory>>),
 }
 
 impl From<NVTField> for Field {
@@ -57,6 +63,11 @@ impl From<NVTField> for Field {
 impl From<Kb> for Field {
     fn from(value: Kb) -> Self {
         Self::KB(value)
+    }
+}
+impl From<models::VulnerabilityData> for Field {
+    fn from(value: models::VulnerabilityData) -> Self {
+        Self::NotusAdvisory(Box::new(Some(value)))
     }
 }
 
@@ -120,6 +131,8 @@ impl Display for StorageError {
         }
     }
 }
+
+impl std::error::Error for StorageError {}
 
 /// Defines the Dispatcher interface to distribute fields
 pub trait Dispatcher<K>: Sync + Send {
@@ -196,7 +209,7 @@ pub struct DefaultDispatcher<K> {
     /// The data storage
     ///
     /// The memory access is managed via an Arc while the Mutex ensures that only one consumer at a time is accessing it.
-    data: Arc<Mutex<StoreItem>>,
+    data: Arc<RwLock<StoreItem>>,
 }
 
 impl<K> DefaultDispatcher<K> {
@@ -211,7 +224,7 @@ impl<K> DefaultDispatcher<K> {
 
     /// Cleanses stored data.
     pub fn cleanse(&self) -> Result<(), StorageError> {
-        let mut data = Arc::as_ref(&self.data).lock()?;
+        let mut data = Arc::as_ref(&self.data).write()?;
         data.clear();
         data.shrink_to_fit();
         Ok(())
@@ -223,7 +236,7 @@ where
     K: AsRef<str> + Display + Default + From<String> + Send + Sync,
 {
     fn dispatch(&self, key: &K, scope: Field) -> Result<(), StorageError> {
-        let mut data = Arc::as_ref(&self.data).lock()?;
+        let mut data = Arc::as_ref(&self.data).write()?;
         match data.iter_mut().find(|(k, _)| k.as_str() == key.as_ref()) {
             Some((_, v)) => v.push(scope),
             None => data.push((key.as_ref().to_owned(), vec![scope])),
@@ -241,46 +254,74 @@ where
     }
 }
 
+/// Holds iterator in memory
+pub struct InMemoryDataWrapper<T> {
+    inner: Box<dyn Iterator<Item = T>>,
+}
+
+impl<T> InMemoryDataWrapper<T>
+where
+    T: 'static,
+{
+    /// Creates a new instance based on a Vector
+    pub fn new(v: Vec<T>) -> InMemoryDataWrapper<T> {
+        Self {
+            inner: Box::new(v.into_iter()),
+        }
+    }
+}
+impl<T> Iterator for InMemoryDataWrapper<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
 impl<K> Retriever<K> for DefaultDispatcher<K>
 where
-    K: AsRef<str> + Display + Default + From<String>,
+    K: AsRef<str> + Display + Default + From<String> + 'static,
 {
-    fn retrieve(&self, key: &K, scope: &Retrieve) -> Result<Vec<Field>, StorageError> {
-        let data = Arc::as_ref(&self.data).lock()?;
+    fn retrieve(
+        &self,
+        key: &K,
+        scope: Retrieve,
+    ) -> Result<Box<dyn Iterator<Item = Field>>, StorageError> {
+        let data = Arc::as_ref(&self.data).read()?;
+        let data = InMemoryDataWrapper::new(data.clone());
         let skey = key.to_string();
-        let result = data
-            .iter()
-            .filter(|(k, _)| k == &skey)
-            .flat_map(|(_, v)| v.clone())
-            .filter(|v| scope.for_field(v))
-            .collect::<Vec<Field>>();
-        Ok(result)
+        Ok(Box::new(
+            data.into_iter()
+                .filter(move |(k, _)| k == &skey)
+                .flat_map(|(_, v)| v.clone())
+                .filter(move |v| scope.for_field(v)),
+        ))
     }
 
     fn retrieve_by_field(
         &self,
-        field: &Field,
-        scope: &Retrieve,
-    ) -> Result<Vec<(K, Vec<Field>)>, StorageError> {
-        let data = Arc::as_ref(&self.data).lock()?;
+        field: Field,
+        scope: Retrieve,
+    ) -> Result<Box<dyn Iterator<Item = (K, Field)>>, StorageError> {
+        let data = Arc::as_ref(&self.data).read()?;
         tracing::debug!("Entries: {:?}", data.len());
+        let data = InMemoryDataWrapper::new(data.clone());
         let result = data
-            .iter()
-            .filter(|(_, v)| v.contains(field))
-            .map(|(k, v)| {
-                (
-                    k.clone().into(),
-                    v.iter().filter(|v| scope.for_field(v)).cloned().collect(),
-                )
-            })
-            .collect::<Vec<(K, Vec<Field>)>>();
-        Ok(result)
+            .into_iter()
+            .filter(move |(_, v)| v.contains(&field))
+            .flat_map(move |(k, v)| {
+                let scope = scope.clone();
+                v.into_iter()
+                    .filter(move |v| scope.for_field(v))
+                    .map(move |v| (K::from(k.clone()), v))
+            });
+        Ok(Box::new(result))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::nvt::NVTKey;
+    use crate::item::NVTKey;
 
     use super::Field::*;
     use super::NVTField::*;
@@ -292,20 +333,28 @@ mod tests {
         let key: String = Default::default();
         storage.dispatch(&key, NVT(Oid("moep".to_owned())))?;
         assert_eq!(
-            storage.retrieve(&key, &Retrieve::NVT(None))?,
+            storage
+                .retrieve(&key, Retrieve::NVT(None))?
+                .collect::<Vec<_>>(),
             vec![NVT(Oid("moep".to_owned()))]
         );
         assert_eq!(
-            storage.retrieve(&key, &Retrieve::NVT(Some(NVTKey::Oid)))?,
+            storage
+                .retrieve(&key, Retrieve::NVT(Some(NVTKey::Oid)))?
+                .collect::<Vec<_>>(),
             vec![NVT(Oid("moep".to_owned()))]
         );
         assert_eq!(
-            storage.retrieve(&key, &Retrieve::NVT(Some(NVTKey::Family)))?,
+            storage
+                .retrieve(&key, Retrieve::NVT(Some(NVTKey::Family)))?
+                .collect::<Vec<_>>(),
             vec![]
         );
         assert_eq!(
-            storage.retrieve_by_field(&NVT(Oid("moep".to_owned())), &Retrieve::NVT(None))?,
-            vec![(key.clone(), vec![NVT(Oid("moep".to_owned()))])]
+            storage
+                .retrieve_by_field(NVT(Oid("moep".to_owned())), Retrieve::NVT(None))?
+                .collect::<Vec<_>>(),
+            vec![(key.clone(), NVT(Oid("moep".to_owned())))]
         );
         Ok(())
     }

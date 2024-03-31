@@ -2,15 +2,15 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-use std::{path::PathBuf, sync::RwLock};
+use std::sync::RwLock;
 
 use async_trait::async_trait;
 use storage::DefaultDispatcher;
 
-use crate::{
-    notus::NotusWrapper,
-    response,
-    scan::{Error, ScanDeleter, ScanResultFetcher, ScanStarter, ScanStopper},
+use crate::{config, notus::NotusWrapper, response, scheduling};
+
+use models::scanner::{
+    Error, ScanDeleter, ScanResultFetcher, ScanResults, ScanStarter, ScanStopper,
 };
 
 #[derive(Debug, Clone)]
@@ -18,57 +18,19 @@ pub struct NoScanner;
 #[derive(Debug, Clone)]
 pub struct Scanner<S>(S);
 
-#[derive(Debug, Clone)]
-/// sets the interval when to check for new results.
-pub struct ResultContext(pub std::time::Duration);
-
-impl From<std::time::Duration> for ResultContext {
-    fn from(d: std::time::Duration) -> Self {
-        Self(d)
-    }
-}
-
-#[derive(Debug, Clone)]
-/// Sets the path to the feed and the interval when to check for updates.
-pub struct FeedContext {
-    /// The path to the feed.
-    pub path: PathBuf,
-    /// The interval when to check for updates.
-    pub verify_interval: std::time::Duration,
-    /// Enable signature check
-    pub signature_check: bool,
-}
-
-impl From<(PathBuf, std::time::Duration, bool)> for FeedContext {
-    fn from(
-        (path, verify_interval, signature_check): (PathBuf, std::time::Duration, bool),
-    ) -> Self {
-        Self {
-            path,
-            verify_interval,
-            signature_check,
-        }
-    }
-}
-
-impl From<(&str, std::time::Duration, bool)> for FeedContext {
-    fn from((path, verify_interval, signature_check): (&str, std::time::Duration, bool)) -> Self {
-        (PathBuf::from(path), verify_interval, signature_check).into()
-    }
-}
-
 #[derive(Debug, Default)]
 /// Context builder is used to build the context of the application.
 pub struct ContextBuilder<S, DB, T> {
     scanner: T,
     storage: DB,
-    result_config: Option<ResultContext>,
-    feed_config: Option<FeedContext>,
+    feed_config: Option<crate::config::Feed>,
     api_key: Option<String>,
     enable_get_scans: bool,
     marker: std::marker::PhantomData<S>,
     response: response::Response,
     notus: Option<NotusWrapper>,
+    scheduler_config: Option<config::Scheduler>,
+    mode: config::Mode,
 }
 
 impl<S>
@@ -79,27 +41,27 @@ impl<S>
         Self {
             scanner: NoScanner,
             storage: crate::storage::inmemory::Storage::default(),
-            result_config: None,
             feed_config: None,
             api_key: None,
             marker: std::marker::PhantomData,
             enable_get_scans: false,
             response: response::Response::default(),
             notus: None,
+            scheduler_config: None,
+            mode: config::Mode::default(),
         }
     }
 }
 
 impl<S, DB, T> ContextBuilder<S, DB, T> {
-    /// Sets the result config.
-    pub fn result_config(mut self, config: impl Into<ResultContext>) -> Self {
-        self.result_config = Some(config.into());
+    /// Sets the mode.
+    pub fn mode(mut self, mode: config::Mode) -> Self {
+        self.mode = mode;
         self
     }
-
     /// Sets the feed config.
-    pub fn feed_config(mut self, config: impl Into<FeedContext>) -> Self {
-        self.feed_config = Some(config.into());
+    pub fn feed_config(mut self, config: config::Feed) -> Self {
+        self.feed_config = Some(config);
         if let Some(fp) = self.feed_config.as_ref() {
             let loader = nasl_interpreter::FSPluginLoader::new(fp.path.clone());
             let dispatcher: DefaultDispatcher<String> = DefaultDispatcher::default();
@@ -131,45 +93,52 @@ impl<S, DB, T> ContextBuilder<S, DB, T> {
         self
     }
 
+    pub fn scheduler_config(mut self, scheduler_config: config::Scheduler) -> Self {
+        self.scheduler_config = Some(scheduler_config);
+        self
+    }
+
     /// Sets the storage.
     #[allow(dead_code)]
     pub fn storage<NDB>(self, storage: NDB) -> ContextBuilder<S, NDB, T> {
         let ContextBuilder {
             scanner,
             storage: _,
-            result_config,
             feed_config,
             api_key,
             enable_get_scans,
             marker,
             response,
             notus,
+            scheduler_config,
+            mode,
         } = self;
         ContextBuilder {
             scanner,
             storage,
-            result_config,
             feed_config,
             api_key,
             enable_get_scans,
             marker,
             response,
             notus,
+            scheduler_config,
+            mode,
         }
     }
 }
 
-impl<S, DB> ContextBuilder<S, DB, NoScanner>
-where
-    S: Clone,
-{
+impl<S, DB> ContextBuilder<S, DB, NoScanner> {
     /// Sets the scanner. This is required.
     pub fn scanner(self, scanner: S) -> ContextBuilder<S, DB, Scanner<S>>
     where
-        S: super::Scanner + 'static + std::marker::Send + std::marker::Sync + std::fmt::Debug,
+        S: models::scanner::Scanner
+            + 'static
+            + std::marker::Send
+            + std::marker::Sync
+            + std::fmt::Debug,
     {
         let Self {
-            result_config,
             feed_config,
             api_key,
             enable_get_scans,
@@ -178,33 +147,40 @@ where
             response,
             storage,
             notus,
+            scheduler_config,
+            mode,
         } = self;
         ContextBuilder {
             scanner: Scanner(scanner),
             storage,
-            result_config,
             feed_config,
             marker: std::marker::PhantomData,
             api_key,
             enable_get_scans,
             response,
             notus,
+            scheduler_config,
+            mode,
         }
     }
 }
 
 impl<S, DB> ContextBuilder<S, DB, Scanner<S>> {
     pub fn build(self) -> Context<S, DB> {
+        let scheduler = scheduling::Scheduler::new(
+            self.scheduler_config.unwrap_or_default(),
+            self.scanner.0,
+            self.storage,
+        );
         Context {
-            scanner: self.scanner.0,
             response: self.response,
-            db: self.storage,
-            result_config: self.result_config,
+            scheduler,
             feed_config: self.feed_config,
             abort: Default::default(),
             api_key: self.api_key,
             enable_get_scans: self.enable_get_scans,
             notus: self.notus,
+            mode: self.mode,
         }
     }
 }
@@ -212,29 +188,26 @@ impl<S, DB> ContextBuilder<S, DB, Scanner<S>> {
 #[derive(Debug)]
 /// The context of the application
 pub struct Context<S, DB> {
-    /// The scanner that is used to start, stop and fetch results of scans.
-    pub scanner: S,
     /// Creates responses
     pub response: response::Response,
-    /// The scans that are being tracked.
-    ///
-    /// It is locked to allow concurrent access, usually the results are updated
-    /// with a background task and appended to the progress of the scan.
-    pub db: DB,
-    /// Configuration for result fetching
-    pub result_config: Option<ResultContext>,
     /// Configuration for feed handling.
-    pub feed_config: Option<FeedContext>,
+    pub feed_config: Option<config::Feed>,
     /// The api key that is used to authenticate the client.
     ///
     /// When none api key is set, no authentication is required.
     pub api_key: Option<String>,
     /// Whether to enable the GET /scans endpoint
     pub enable_get_scans: bool,
+    pub mode: config::Mode,
     /// Aborts the background loops
     pub abort: RwLock<bool>,
     /// Notus Scanner
     pub notus: Option<NotusWrapper>,
+    /// All scanner and db operations must go through a scheduler.
+    ///
+    /// This allows us to throttle requests per need and gives us control when to start/stop/delete
+    /// a scan.
+    pub scheduler: scheduling::Scheduler<DB, S>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -270,7 +243,7 @@ impl ScanDeleter for NoOpScanner {
 
 #[async_trait]
 impl ScanResultFetcher for NoOpScanner {
-    async fn fetch_results<I>(&self, _: I) -> Result<crate::scan::FetchResult, Error>
+    async fn fetch_results<I>(&self, _: I) -> Result<ScanResults, Error>
     where
         I: AsRef<str> + Send,
     {

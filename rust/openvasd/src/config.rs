@@ -22,11 +22,84 @@ pub struct Feed {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Notus {
     pub products_path: PathBuf,
+    pub advisories_path: PathBuf,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct Redis {
+    pub url: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Scheduler {
+    #[serde(default)]
+    pub max_queued_scans: Option<usize>,
+    #[serde(default)]
+    pub max_running_scans: Option<usize>,
+    #[serde(default)]
+    pub min_free_mem: Option<u64>,
+    pub check_interval: Duration,
+}
+
+impl Default for Scheduler {
+    fn default() -> Self {
+        Self {
+            check_interval: Duration::from_millis(500),
+            max_queued_scans: None,
+            max_running_scans: None,
+            min_free_mem: None,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+pub struct Scanner {
+    #[serde(default, rename = "type")]
+    pub scanner_type: ScannerType,
+    #[serde(default)]
+    pub ospd: OspdWrapper,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub enum ScannerType {
+    #[serde(rename = "ospd")]
+    OSPD,
+    #[serde(rename = "openvas")]
+    Openvas,
+}
+
+impl Default for ScannerType {
+    fn default() -> Self {
+        Self::OSPD
+    }
+}
+
+impl TypedValueParser for ScannerType {
+    type Value = ScannerType;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        _: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        Ok(match value.to_str().unwrap_or_default() {
+            "ospd" => ScannerType::OSPD,
+            "openvas" => ScannerType::Openvas,
+            _ => {
+                let mut cmd = cmd.clone();
+                let err = cmd.error(
+                    clap::error::ErrorKind::InvalidValue,
+                    "`{}` is not a wrapper type.",
+                );
+                return Err(err);
+            }
+        })
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct OspdWrapper {
-    pub result_check_interval: Duration,
     pub socket: PathBuf,
     pub read_timeout: Option<Duration>,
 }
@@ -34,7 +107,6 @@ pub struct OspdWrapper {
 impl Default for OspdWrapper {
     fn default() -> Self {
         OspdWrapper {
-            result_check_interval: Duration::from_secs(1),
             socket: PathBuf::from("/var/run/ospd/ospd.sock"),
             read_timeout: None,
         }
@@ -55,6 +127,15 @@ impl Default for Notus {
     fn default() -> Self {
         Notus {
             products_path: PathBuf::from("/var/lib/notus/products"),
+            advisories_path: PathBuf::from("/var/lib/notus/advisories"),
+        }
+    }
+}
+
+impl Default for Redis {
+    fn default() -> Self {
+        Redis {
+            url: "unix:///run/redis-openvas/redis.sock".to_string(),
         }
     }
 }
@@ -69,6 +150,45 @@ impl Default for Listener {
         Self {
             address: ([127, 0, 0, 1], 3000).into(),
         }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]
+/// Describes different modes openvasd can be run as.
+///
+/// `Service` prefix means that openvasd is a http service used by others.
+/// `Client` prefix means that openvasd is run as a client and  calls other services.
+pub enum Mode {
+    #[default]
+    #[serde(rename = "service")]
+    /// Enables all endpoints and moniors feed and active scans.
+    Service,
+    /// Disables everything but the notus endpoints
+    #[serde(rename = "service_notus")]
+    ServiceNotus,
+}
+
+impl TypedValueParser for Mode {
+    type Value = Self;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        Ok(match value.to_str().unwrap_or_default() {
+            "service" => Self::Service,
+            "service_notus" => Self::ServiceNotus,
+            _ => {
+                let mut cmd = cmd.clone();
+                let err = cmd.error(
+                    clap::error::ErrorKind::InvalidValue,
+                    "`{}` is not a wrapper type.",
+                );
+                return Err(err);
+            }
+        })
     }
 }
 
@@ -107,6 +227,8 @@ pub enum StorageType {
     InMemory,
     #[serde(rename = "fs")]
     FileSystem,
+    #[serde(rename = "redis")]
+    Redis,
 }
 
 impl TypedValueParser for StorageType {
@@ -125,7 +247,7 @@ impl TypedValueParser for StorageType {
                 let mut cmd = cmd.clone();
                 let err = cmd.error(
                     clap::error::ErrorKind::InvalidValue,
-                    "`{}` is not an storage type.",
+                    "`{}` is not a storage type.",
                 );
                 return Err(err);
             }
@@ -154,10 +276,14 @@ pub struct Storage {
     pub storage_type: StorageType,
     #[serde(default)]
     pub fs: FileStorage,
+    #[serde(default)]
+    pub redis: Redis,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct Config {
+    #[serde(default)]
+    pub mode: Mode,
     #[serde(default)]
     pub feed: Feed,
     #[serde(default)]
@@ -167,13 +293,15 @@ pub struct Config {
     #[serde(default)]
     pub tls: Tls,
     #[serde(default)]
-    pub ospd: OspdWrapper,
+    pub scanner: Scanner,
     #[serde(default)]
     pub listener: Listener,
     #[serde(default)]
     pub log: Logging,
     #[serde(default)]
     pub storage: Storage,
+    #[serde(default)]
+    pub scheduler: Scheduler,
 }
 
 impl Display for Config {
@@ -242,12 +370,25 @@ impl Config {
                     .help("interval to check for feed updates in seconds"),
             )
             .arg(
+                clap::Arg::new("notus-advisories")
+                    .env("NOTUS_ADVISORIES")
+                    .long("advisories")
+                    .value_parser(clap::builder::PathBufValueParser::new())
+                    .action(ArgAction::Set)
+                    .help("Path containing the Notus advisories directory"))
+            .arg(
                 clap::Arg::new("notus-products")
-                    .env("NOTUS_SCANNER_PRODUCTS_DIRECTORY")
-                    .long("products-directory")
+                    .env("NOTUS_PRODUCTS")
+                    .long("products")
                     .value_parser(clap::builder::PathBufValueParser::new())
                     .action(ArgAction::Set)
                     .help("Path containing the Notus products directory"))
+            .arg(
+                clap::Arg::new("redis-url")
+                    .long("redis-url")
+                    //.value_parser(clap::builder::PathBufValueParser::new())
+                    .action(ArgAction::Set)
+                    .help("Redis url. Either unix:// or redis://"))
             .arg(
                 clap::Arg::new("tls-certs")
                     .env("TLS_CERTS")
@@ -285,6 +426,44 @@ impl Config {
                     .long("api-key")
                     .action(ArgAction::Set)
                     .help("API key that must be set as X-API-KEY header to gain access"),
+            )
+            .arg(
+                clap::Arg::new("wrapper-type")
+                    .env("WRAPPER_TYPE")
+                    .long("wrapper-type")
+                    .value_name("ospd,openvas")
+                    .value_parser(ScannerType::OSPD)
+                    .help("Type of wrapper used to manage scans")
+            )
+            .arg(
+                clap::Arg::new("max-queued-scans")
+                    .env("MAX_QUEUED_SCANS")
+                    .long("max-queued-scans")
+                    .action(ArgAction::Set)
+                    .help("Maximum number of queued scans")
+            )
+            .arg(
+                clap::Arg::new("max-running-scans")
+                    .env("MAX_RUNNING_SCANS")
+                    .long("max-running-scans")
+                    .action(ArgAction::Set)
+                    .help("Maximum number of active running scans, omit for no limits")
+
+            )
+            .arg(
+                clap::Arg::new("min-free-mem")
+                    .env("MIN_FREE_MEMORY")
+                    .long("min-free-mem")
+                    .action(ArgAction::Set)
+                    .help("Minimum memory available to start a new scan")
+            )
+            .arg(
+                clap::Arg::new("check-interval")
+                    .env("SCHEDULER_CHECK_INTERVAL")
+                    .long("check_interval")
+                    .value_parser(clap::value_parser!(u64))
+                    .value_name("SECONDS")
+                    .help("Check interval of the Scheduler if a new scan can be started")
             )
             .arg(
                 clap::Arg::new("ospd-socket")
@@ -348,6 +527,14 @@ impl Config {
                     .short('L')
                     .help("Level of log messages to be shown. TRACE > DEBUG > INFO > WARN > ERROR"),
             )
+            .arg(
+                clap::Arg::new("mode")
+                    .env("OPENVASD_MODE")
+                    .long("mode")
+                    .value_name("service,service_notus")
+                    .value_parser(Mode::Service)
+                    .help("Sets the openvasd mode"),
+            )
             .get_matches();
         let mut config = match cmds.get_one::<String>("config") {
             Some(path) => Self::from_file(path),
@@ -362,14 +549,26 @@ impl Config {
         if let Some(interval) = cmds.get_one::<u64>("feed-check-interval") {
             config.feed.check_interval = Duration::from_secs(*interval);
         }
-        if let Some(interval) = cmds.get_one::<u64>("result-check-interval") {
-            config.ospd.result_check_interval = Duration::from_secs(*interval);
+        if let Some(wrapper_type) = cmds.get_one::<ScannerType>("wrapper-type") {
+            config.scanner.scanner_type = wrapper_type.clone()
+        }
+        if let Some(max_queued_scans) = cmds.get_one::<usize>("max-queued-scans") {
+            config.scheduler.max_queued_scans = Some(*max_queued_scans)
+        }
+        if let Some(max_running_scans) = cmds.get_one::<usize>("max-running-scans") {
+            config.scheduler.max_running_scans = Some(*max_running_scans)
+        }
+        if let Some(min_free_mem) = cmds.get_one::<u64>("min-free-mem") {
+            config.scheduler.min_free_mem = Some(*min_free_mem)
+        }
+        if let Some(check_interval) = cmds.get_one::<u64>("check-interval") {
+            config.scheduler.check_interval = Duration::from_millis(*check_interval)
         }
         if let Some(path) = cmds.get_one::<PathBuf>("ospd-socket") {
-            config.ospd.socket = path.clone();
+            config.scanner.ospd.socket = path.clone();
         }
         if let Some(interval) = cmds.get_one::<u64>("read-timeout") {
-            config.ospd.read_timeout = Some(Duration::from_secs(*interval));
+            config.scanner.ospd.read_timeout = Some(Duration::from_secs(*interval));
         }
 
         if let Some(path) = cmds.get_one::<PathBuf>("feed-path") {
@@ -377,6 +576,12 @@ impl Config {
         }
         if let Some(path) = cmds.get_one::<PathBuf>("notus-products") {
             config.notus.products_path = path.clone();
+        }
+        if let Some(path) = cmds.get_one::<PathBuf>("notus-advisories") {
+            config.notus.advisories_path = path.clone();
+        }
+        if let Some(path) = cmds.get_one::<String>("redis-url") {
+            config.storage.redis.url = path.clone();
         }
         if let Some(path) = cmds.get_one::<PathBuf>("tls-certs") {
             config.tls.certs = Some(path.clone());
@@ -404,6 +609,9 @@ impl Config {
         }
         if let Some(path) = cmds.get_one::<PathBuf>("storage_path") {
             config.storage.fs.path = path.clone();
+        }
+        if let Some(mode) = cmds.get_one::<Mode>("mode") {
+            config.mode = mode.clone();
         }
         if let Some(key) = cmds.get_one::<String>("storage_key") {
             if !key.is_empty() {
@@ -437,13 +645,24 @@ mod tests {
         assert!(config.tls.key.is_none());
         assert!(config.tls.client_certs.is_none());
 
-        assert_eq!(config.ospd.result_check_interval, Duration::from_secs(1));
-        assert_eq!(config.ospd.socket, PathBuf::from("/var/run/ospd/ospd.sock"));
-        assert!(config.ospd.read_timeout.is_none());
+        assert_eq!(config.scheduler.check_interval, Duration::from_millis(500));
+        assert_eq!(
+            config.scanner.ospd.socket,
+            PathBuf::from("/var/run/ospd/ospd.sock")
+        );
+        assert!(config.scanner.ospd.read_timeout.is_none());
 
         assert_eq!(config.listener.address, ([127, 0, 0, 1], 3000).into());
 
         assert_eq!(config.log.level, "INFO".to_string());
+        // this is used to verify the default config manually.
+        // se to true to write the default configuration to `tmp`
+        if false {
+            let mut cf = std::fs::File::create("/tmp/openvas.default.example.toml").unwrap();
+            use std::io::Write;
+            cf.write_all(toml::to_string_pretty(&config).unwrap().as_bytes())
+                .unwrap();
+        }
     }
 
     #[test]

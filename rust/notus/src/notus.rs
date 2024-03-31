@@ -47,8 +47,8 @@ where
 
     fn load_new_product(&self, os: &str) -> Result<(Product, FeedStamp), Error> {
         tracing::debug!(
-            "Loading notus product from {:?}",
-            self.loader.get_root_dir()
+            root=?self.loader.get_root_dir(),
+            "Loading notus product",
         );
         let (product, stamp) = self.loader.load_product(os)?;
 
@@ -135,8 +135,6 @@ where
                     return Err(Error::HashsumLoadError(e));
                 }
             }
-        } else {
-            tracing::warn!("Signature check disabled");
         }
         Ok(())
     }
