@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2023 Greenbone AG
 //
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-or-later WITH x11vnc-openssl-exception
 
 //! TLS support for the openvasd.
 //! To use it you need to provide a certificate and a key file.
@@ -9,7 +9,7 @@
 //!
 //! ```rust
 //!let scanner = scan::OSPDWrapper::from_env();
-//!let ctx = controller::ContextBuilder::new()
+//!let ctx = controller::ContextFactory | update::new()
 //!    .scanner(scanner)
 //!    .build();
 //!let controller = std::sync::Arc::new(ctx);
@@ -212,9 +212,7 @@ pub fn tls_config(config: &crate::config::Config) -> Result<Option<TlsData>, Err
                 };
             }
             None => {
-                tracing::info!(
-                    "Client verification disabled"
-                );
+                tracing::info!("Client verification disabled");
             }
         };
         let client_identifier = Arc::new(RwLock::new(ClientIdentifier::default()));

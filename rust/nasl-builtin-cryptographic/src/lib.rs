@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2023 Greenbone AG
 //
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-or-later WITH x11vnc-openssl-exception
 
 use nasl_builtin_utils::error::FunctionErrorKind;
 use nasl_builtin_utils::{Context, NaslFunction};
@@ -14,6 +14,7 @@ pub mod aes_cmac;
 pub mod aes_ctr;
 pub mod aes_gcm;
 pub mod aes_gmac;
+pub mod des;
 pub mod hash;
 pub mod hmac;
 
@@ -25,10 +26,7 @@ enum Crypt {
 /// Decodes given string as hex and returns the result as a byte array
 // TODO only used in tests, move tests to its own module and define there
 
-pub(crate) fn lookup<K>(function_name: &str) -> Option<NaslFunction<K>>
-where
-    K: AsRef<str>,
-{
+pub(crate) fn lookup(function_name: &str) -> Option<NaslFunction> {
     aes_ccm::lookup(function_name)
         .or_else(|| hmac::lookup(function_name))
         .or_else(|| aes_cbc::lookup(function_name))
@@ -37,22 +35,23 @@ where
         .or_else(|| aes_cmac::lookup(function_name))
         .or_else(|| aes_gmac::lookup(function_name))
         .or_else(|| hash::lookup(function_name))
+        .or_else(|| des::lookup(function_name))
 }
 
 pub struct Cryptographic;
 
-impl<K: AsRef<str>> nasl_builtin_utils::NaslFunctionExecuter<K> for Cryptographic {
+impl nasl_builtin_utils::NaslFunctionExecuter for Cryptographic {
     fn nasl_fn_execute(
         &self,
         name: &str,
         register: &Register,
-        context: &Context<K>,
+        context: &Context,
     ) -> Option<nasl_builtin_utils::NaslResult> {
         lookup(name).map(|x| x(register, context))
     }
 
     fn nasl_fn_defined(&self, name: &str) -> bool {
-        lookup::<K>(name).is_some()
+        lookup(name).is_some()
     }
 }
 /// Get named argument of Type Data or String from the register with appropriate error handling.
