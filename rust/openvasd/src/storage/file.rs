@@ -108,7 +108,7 @@ impl<S> Storage<S> {
                 for adv in advisories.advisories {
                     let data = models::VulnerabilityData {
                         adv,
-                        famile: advisories.family.clone(),
+                        family: advisories.family.clone(),
                         filename: filename.to_owned(),
                     };
                     let nvt: Nvt = data.into();
@@ -433,7 +433,7 @@ impl ItemDispatcher for Dispa {
     fn dispatch_advisory(
         &self,
         _: &str,
-        _: Box<Option<storage::NotusAdvisory>>,
+        _: Option<storage::NotusAdvisory>,
     ) -> Result<(), storage::StorageError> {
         Ok(())
     }
@@ -464,7 +464,7 @@ where
         {
             let hash = self.hash.read().await;
             // since we override the file once instead of changing its content we update all
-            // configured feeds, regardless if the changd or not.
+            // configured feeds, regardless if the changed or not.
             for h in hash.iter() {
                 match h.typus {
                     FeedType::NASL => {
@@ -630,7 +630,7 @@ mod tests {
         );
         memory_storage.synchronize_feeds(feeds).await.unwrap();
         let amount_memory_oids = memory_storage.oids().await.unwrap().count();
-        assert_eq!(amount_memory_oids, 4);
+        assert_eq!(amount_memory_oids, 5);
         assert_eq!(amount_memory_oids, amount_file_oids);
     }
 

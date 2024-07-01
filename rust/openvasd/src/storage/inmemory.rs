@@ -63,9 +63,9 @@ impl ItemDispatcher for Dispa {
     fn dispatch_advisory(
         &self,
         _: &str,
-        x: Box<Option<storage::NotusAdvisory>>,
+        x: Option<storage::NotusAdvisory>,
     ) -> Result<(), storage::StorageError> {
-        if let Some(x) = *x {
+        if let Some(x) = x {
             let nvt: Nvt = x.into();
             let rt = tokio::runtime::Builder::new_current_thread()
                 .build()
@@ -324,7 +324,7 @@ where
                 for adv in advisories.advisories {
                     let data = models::VulnerabilityData {
                         adv,
-                        famile: advisories.family.clone(),
+                        family: advisories.family.clone(),
                         filename: filename.to_owned(),
                     };
                     let nvt: Nvt = data.into();

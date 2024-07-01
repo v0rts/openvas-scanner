@@ -122,12 +122,7 @@ where
         Ok(())
     }
 
-    fn dispatch_advisory(
-        &self,
-        _: &str,
-
-        _: Box<Option<NotusAdvisory>>,
-    ) -> Result<(), StorageError> {
+    fn dispatch_advisory(&self, _: &str, _: Option<NotusAdvisory>) -> Result<(), StorageError> {
         Ok(())
     }
 }
@@ -161,6 +156,14 @@ where
         _: storage::Field,
         _: storage::Retrieve,
     ) -> Result<Box<dyn Iterator<Item = (ContextKey, storage::Field)>>, StorageError> {
+        Ok(Box::new([].into_iter()))
+    }
+
+    fn retrieve_by_fields(
+        &self,
+        _: Vec<storage::Field>,
+        _: storage::Retrieve,
+    ) -> storage::FieldKeyResult {
         Ok(Box::new([].into_iter()))
     }
 }

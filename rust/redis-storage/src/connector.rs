@@ -8,7 +8,6 @@ use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::usize;
 
 use crate::dberror::DbError;
 use crate::dberror::RedisStorageResult;
@@ -719,13 +718,9 @@ where
         kbs.push(kb);
         Ok(())
     }
-    fn dispatch_advisory(
-        &self,
-        key: &str,
-        adv: Box<Option<NotusAdvisory>>,
-    ) -> Result<(), StorageError> {
+    fn dispatch_advisory(&self, key: &str, adv: Option<NotusAdvisory>) -> Result<(), StorageError> {
         let mut cache = Arc::as_ref(&self.cache).lock()?;
-        cache.redis_add_advisory(key, *adv).map_err(|e| e.into())
+        cache.redis_add_advisory(key, adv).map_err(|e| e.into())
     }
 }
 
@@ -757,6 +752,14 @@ where
         _field: storage::Field,
         _scope: storage::Retrieve,
     ) -> Result<Box<dyn Iterator<Item = (ContextKey, storage::Field)>>, StorageError> {
+        todo!()
+    }
+
+    fn retrieve_by_fields(
+        &self,
+        _: Vec<storage::Field>,
+        _: storage::Retrieve,
+    ) -> storage::FieldKeyResult {
         todo!()
     }
 }

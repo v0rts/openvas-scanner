@@ -232,7 +232,7 @@ macro_rules! make_nvt_fields {
         }
 
         /// Key are the keys to get the field defines in NVTField
-        #[derive(Clone, Debug, PartialEq, Eq)]
+        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
         pub enum NVTKey {
            $(
              #[doc = $doc]
@@ -499,6 +499,178 @@ pub struct Nvt {
     pub family: String,
 }
 
+impl Display for Nvt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "VT {} ({})", self.oid, self.filename)
+    }
+}
+
+impl Nvt {
+    /// Returns Err with the feed_version if it is a version Ok otherwise
+    pub fn set_from_field(&mut self, field: NVTField) -> Result<(), String> {
+        match field {
+            NVTField::Oid(oid) => self.oid = oid,
+            NVTField::FileName(s) => self.filename = s,
+            NVTField::Version(s) => {
+                return Err(s);
+            }
+            NVTField::Name(s) => self.name = s,
+            NVTField::Tag(key, name) => {
+                self.tag.insert(key, name);
+            }
+            NVTField::Dependencies(s) => self.dependencies.extend(s),
+            NVTField::RequiredKeys(s) => self.required_keys.extend(s),
+            NVTField::MandatoryKeys(s) => self.mandatory_keys.extend(s),
+            NVTField::ExcludedKeys(s) => self.excluded_keys.extend(s),
+            NVTField::RequiredPorts(s) => self.required_ports.extend(s),
+            NVTField::RequiredUdpPorts(s) => self.required_udp_ports.extend(s),
+            NVTField::Preference(s) => self.preferences.push(s),
+            NVTField::Reference(s) => self.references.extend(s),
+            NVTField::Category(s) => self.category = s,
+            NVTField::Family(s) => self.family = s,
+            NVTField::NoOp => {}
+            NVTField::Nvt(x) => *self = x,
+        };
+        Ok(())
+    }
+    /// Verifies if a nvt is matching a field
+    pub fn matches_field(&self, field: &Field) -> bool {
+        match field {
+            Field::NVT(nvt_field) => match nvt_field {
+                NVTField::Oid(x) => &self.oid == x,
+                NVTField::FileName(x) => &self.filename == x,
+                NVTField::Name(x) => &self.name == x,
+                NVTField::Tag(a, _) => self.tag.contains_key(a),
+                NVTField::Dependencies(x) => &self.dependencies == x,
+                NVTField::RequiredKeys(x) => &self.required_keys == x,
+                NVTField::MandatoryKeys(x) => &self.mandatory_keys == x,
+                NVTField::ExcludedKeys(x) => &self.excluded_keys == x,
+                NVTField::RequiredPorts(x) => &self.required_ports == x,
+                NVTField::RequiredUdpPorts(x) => &self.required_udp_ports == x,
+                NVTField::Preference(x) => self.preferences.contains(x),
+                NVTField::Reference(x) => &self.references == x,
+                NVTField::Category(x) => &self.category == x,
+                NVTField::Family(x) => &self.family == x,
+                NVTField::Nvt(x) => self == x,
+                NVTField::NoOp | NVTField::Version(_) => false,
+            },
+            Field::KB(_) | Field::NotusAdvisory(_) => false,
+        }
+    }
+    /// Verifies if a nvt is matching a field
+    pub fn matches_any_field(&self, field: &[Field]) -> bool {
+        field.iter().any(|x| self.matches_field(x))
+    }
+
+    /// Transform Self to NVTFields based on a given NVTKey.
+    ///
+    /// This helper is useful when a caller doesn't want to have the whole VT but just parts from
+    /// it.
+    pub(crate) fn key_as_field(&self, x: NVTKey) -> Vec<NVTField> {
+        match x {
+            NVTKey::Oid => {
+                if self.oid.is_empty() {
+                    vec![]
+                } else {
+                    vec![NVTField::Oid(self.oid.clone())]
+                }
+            }
+            NVTKey::FileName => {
+                if self.filename.is_empty() {
+                    vec![]
+                } else {
+                    vec![NVTField::FileName(self.filename.clone())]
+                }
+            }
+            NVTKey::Version => vec![],
+            NVTKey::Name => {
+                if self.name.is_empty() {
+                    vec![]
+                } else {
+                    vec![NVTField::Name(self.name.clone())]
+                }
+            }
+            NVTKey::Tag => {
+                if self.tag.is_empty() {
+                    vec![]
+                } else {
+                    todo!("doing it last because it is the reason that we have to return a vec")
+                }
+            }
+            NVTKey::Dependencies => {
+                if self.dependencies.is_empty() {
+                    vec![]
+                } else {
+                    vec![NVTField::Dependencies(self.dependencies.clone())]
+                }
+            }
+            NVTKey::RequiredKeys => {
+                if self.required_keys.is_empty() {
+                    vec![]
+                } else {
+                    vec![NVTField::RequiredKeys(self.required_keys.clone())]
+                }
+            }
+            NVTKey::MandatoryKeys => {
+                if self.mandatory_keys.is_empty() {
+                    vec![]
+                } else {
+                    vec![NVTField::MandatoryKeys(self.mandatory_keys.clone())]
+                }
+            }
+            NVTKey::ExcludedKeys => {
+                if self.excluded_keys.is_empty() {
+                    vec![]
+                } else {
+                    vec![NVTField::ExcludedKeys(self.excluded_keys.clone())]
+                }
+            }
+            NVTKey::RequiredPorts => {
+                if self.required_ports.is_empty() {
+                    vec![]
+                } else {
+                    vec![NVTField::RequiredPorts(self.required_ports.clone())]
+                }
+            }
+            NVTKey::RequiredUdpPorts => {
+                if self.required_udp_ports.is_empty() {
+                    vec![]
+                } else {
+                    vec![NVTField::RequiredUdpPorts(self.required_udp_ports.clone())]
+                }
+            }
+            NVTKey::Preference => {
+                if self.preferences.is_empty() {
+                    vec![]
+                } else {
+                    self.preferences
+                        .clone()
+                        .into_iter()
+                        .map(NVTField::Preference)
+                        .collect()
+                }
+            }
+            NVTKey::Reference => {
+                if self.references.is_empty() {
+                    vec![]
+                } else {
+                    vec![NVTField::Reference(self.references.clone())]
+                }
+            }
+            NVTKey::Category => vec![NVTField::Category(self.category)],
+            NVTKey::Family => {
+                if self.family.is_empty() {
+                    vec![]
+                } else {
+                    vec![NVTField::Family(self.family.clone())]
+                }
+            }
+            NVTKey::Nvt => vec![NVTField::Nvt(self.clone())],
+            NVTKey::NoOp => vec![],
+        }
+    }
+}
+
 impl From<VulnerabilityData> for Nvt {
     fn from(value: VulnerabilityData) -> Self {
         let oid = value.adv.oid.clone();
@@ -587,6 +759,76 @@ impl From<(&str, Vulnerability)> for Nvt {
         }
     }
 }
+
+impl From<crate::NVTField> for Nvt {
+    fn from(value: crate::NVTField) -> Self {
+        match value {
+            NVTField::Oid(oid) => Self {
+                oid,
+                ..Default::default()
+            },
+            NVTField::FileName(filename) => Self {
+                filename,
+                ..Default::default()
+            },
+            NVTField::Version(_) => Default::default(),
+            NVTField::Name(name) => Self {
+                name,
+                ..Default::default()
+            },
+            NVTField::Tag(key, value) => Self {
+                tag: {
+                    let mut result = BTreeMap::new();
+                    result.insert(key, value);
+                    result
+                },
+                ..Default::default()
+            },
+            NVTField::Dependencies(dependencies) => Self {
+                dependencies,
+                ..Default::default()
+            },
+            NVTField::RequiredKeys(required_keys) => Self {
+                required_keys,
+                ..Default::default()
+            },
+            NVTField::MandatoryKeys(mandatory_keys) => Self {
+                mandatory_keys,
+                ..Default::default()
+            },
+            NVTField::ExcludedKeys(excluded_keys) => Self {
+                excluded_keys,
+                ..Default::default()
+            },
+            NVTField::RequiredPorts(required_ports) => Self {
+                required_ports,
+                ..Default::default()
+            },
+            NVTField::RequiredUdpPorts(required_udp_ports) => Self {
+                required_udp_ports,
+                ..Default::default()
+            },
+            NVTField::Preference(preferences) => Self {
+                preferences: vec![preferences],
+                ..Default::default()
+            },
+            NVTField::Reference(references) => Self {
+                references,
+                ..Default::default()
+            },
+            NVTField::Category(category) => Self {
+                category,
+                ..Default::default()
+            },
+            NVTField::Family(family) => Self {
+                family,
+                ..Default::default()
+            },
+            NVTField::Nvt(nvt) => nvt,
+            NVTField::NoOp => Nvt::default(),
+        }
+    }
+}
 /// Is a specialized Dispatcher for NVT information within the description block.
 pub trait ItemDispatcher {
     /// Dispatches the feed version as well as NVT.
@@ -608,8 +850,7 @@ pub trait ItemDispatcher {
         Ok(())
     }
     /// Stores an advisory
-    fn dispatch_advisory(&self, _: &str, _: Box<Option<NotusAdvisory>>)
-        -> Result<(), StorageError>;
+    fn dispatch_advisory(&self, _: &str, _: Option<NotusAdvisory>) -> Result<(), StorageError>;
 }
 
 /// Collects the information while being in a description run and calls the dispatch method
@@ -676,8 +917,7 @@ where
         match scope {
             Field::NVT(nvt) => self.store_nvt_field(nvt),
             Field::KB(kb) => self.dispatcher.dispatch_kb(key, kb),
-            // TODO: rename value to owned_value, create value to return a ref
-            Field::NotusAdvisory(adv) => self.dispatcher.dispatch_advisory(&key.value(), adv),
+            Field::NotusAdvisory(adv) => self.dispatcher.dispatch_advisory(key.as_ref(), *adv),
         }
     }
 
@@ -710,6 +950,14 @@ where
         scope: crate::Retrieve,
     ) -> Result<Box<dyn Iterator<Item = (ContextKey, Field)>>, StorageError> {
         self.dispatcher.retrieve_by_field(field, scope)
+    }
+
+    fn retrieve_by_fields(
+        &self,
+        field: Vec<Field>,
+        scope: crate::Retrieve,
+    ) -> crate::FieldKeyResult {
+        self.dispatcher.retrieve_by_fields(field, scope)
     }
 }
 

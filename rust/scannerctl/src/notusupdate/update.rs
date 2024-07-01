@@ -61,17 +61,16 @@ where
 
         for adv in advisories.advisories {
             let _ = storage.dispatch(
-                &Default::default(),
+                &ContextKey::FileName(filename.to_owned()),
                 storage::Field::NotusAdvisory(Box::new(Some(models::VulnerabilityData {
                     adv,
-                    famile: advisories.family.clone(),
+                    family: advisories.family.clone(),
                     filename: filename.to_owned(),
                 }))),
             );
         }
     }
     let _ = storage.dispatch(
-        // TODO: incorrect?
         &ContextKey::FileName("notuscache".to_string()),
         storage::Field::NotusAdvisory(Box::new(None)),
     );

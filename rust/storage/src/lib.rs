@@ -11,6 +11,7 @@ pub use retrieve::*;
 pub mod time;
 pub mod types;
 use std::{
+    collections::{HashMap, HashSet},
     fmt::Display,
     io,
     sync::{Arc, PoisonError, RwLock},
@@ -30,6 +31,15 @@ pub enum ContextKey {
     ///
     /// The filename is used to know that a given information belongs to certain nasl script.
     FileName(String),
+}
+
+impl AsRef<str> for ContextKey {
+    fn as_ref(&self) -> &str {
+        match self {
+            ContextKey::Scan(x) => x,
+            ContextKey::FileName(x) => x,
+        }
+    }
 }
 
 impl Default for ContextKey {
@@ -85,6 +95,7 @@ pub enum Field {
     /// Knowledge Base item
     KB(Kb),
     /// Notus advisories, when None then the impl can assume finish
+    //  moving notusadvisory into the heap to reduce the size of the other enum members
     NotusAdvisory(Box<Option<NotusAdvisory>>),
 }
 
@@ -99,9 +110,15 @@ impl From<Kb> for Field {
         Self::KB(value)
     }
 }
+
+impl From<item::Nvt> for Field {
+    fn from(value: item::Nvt) -> Self {
+        Field::NVT(NVTField::Nvt(value))
+    }
+}
 impl From<models::VulnerabilityData> for Field {
     fn from(value: models::VulnerabilityData) -> Self {
-        Self::NotusAdvisory(Box::new(Some(value)))
+        Self::NotusAdvisory(Some(value).into())
     }
 }
 
@@ -127,6 +144,20 @@ pub enum StorageError {
 impl<S> From<PoisonError<S>> for StorageError {
     fn from(value: PoisonError<S>) -> Self {
         Self::Dirty(format!("{value:?}"))
+    }
+}
+
+impl TryFrom<Field> for item::Nvt {
+    type Error = StorageError;
+
+    fn try_from(value: Field) -> Result<Self, Self::Error> {
+        match value {
+            Field::NVT(value) => Ok(value.into()),
+            _ => Err(StorageError::UnexpectedData(format!(
+                "{:?} is not a NVT",
+                value
+            ))),
+        }
     }
 }
 
@@ -180,7 +211,7 @@ pub trait Dispatcher: Sync + Send {
     /// Some database require a cleanup therefore this method is called when a script finishes.
     fn on_exit(&self) -> Result<(), StorageError>;
 
-    /// Retries a dispatch for the amount of retries when a retrieable error occurs.
+    /// Retries a dispatch for the amount of retries when a retrievable error occurs.
     fn retry_dispatch(
         &self,
         retries: usize,
@@ -234,20 +265,25 @@ where
     }
 }
 
-/// Contains a Vector of all stored items.
+/// Kbs are bound to a scan_id and a kb_key.
 ///
-/// The first String statement is the used key while the Vector of Scope are the values.
-type StoreItem = Vec<(String, Vec<Field>)>;
+/// To make lookups easier KB items are fetched by a scan_id, followed by the kb key this should
+/// make required_key verifications relatively simple.
+type Kbs = HashMap<String, HashMap<String, Vec<Kb>>>;
+
+/// Vts are using a relative file path as a key. This should make includes, script_dependency
+/// lookups relative simple.
+type Vts = HashMap<String, item::Nvt>;
 
 /// Is a in-memory dispatcher that behaves like a Storage.
 #[derive(Default)]
 pub struct DefaultDispatcher {
     /// If dirty it will not clean the data on_exit
     dirty: bool,
-    /// The data storage
-    ///
-    /// The memory access is managed via an Arc while the Mutex ensures that only one consumer at a time is accessing it.
-    data: Arc<RwLock<StoreItem>>,
+    vts: Arc<RwLock<Vts>>,
+    feed_version: Arc<RwLock<String>>,
+    advisories: Arc<RwLock<HashSet<NotusAdvisory>>>,
+    kbs: Arc<RwLock<Kbs>>,
 }
 
 impl DefaultDispatcher {
@@ -255,25 +291,89 @@ impl DefaultDispatcher {
     pub fn new(dirty: bool) -> Self {
         Self {
             dirty,
-            data: Default::default(),
+            ..Default::default()
         }
     }
 
     /// Cleanses stored data.
     pub fn cleanse(&self) -> Result<(), StorageError> {
-        let mut data = Arc::as_ref(&self.data).write()?;
-        data.clear();
-        data.shrink_to_fit();
+        // TODO cleanse at least kbs, may rest?
+        // let mut data = Arc::as_ref(&self.data).write()?;
+        // data.clear();
+        // data.shrink_to_fit();
+
         Ok(())
+    }
+
+    fn cache_nvt_field(&self, filename: &str, field: NVTField) -> Result<(), StorageError> {
+        let mut data = self.vts.as_ref().write()?;
+        if let Some(vt) = data.get_mut(filename) {
+            if let Err(feed_version) = vt.set_from_field(field) {
+                let mut data = self.feed_version.as_ref().write()?;
+                *data = feed_version;
+            };
+        } else {
+            let mut nvt = item::Nvt::default();
+
+            if let Err(feed_version) = nvt.set_from_field(field) {
+                drop(data);
+                let mut data = self.feed_version.as_ref().write()?;
+                *data = feed_version;
+            } else {
+                if nvt.filename.is_empty() {
+                    nvt.filename = filename.to_string();
+                }
+                data.insert(nvt.filename.clone(), nvt);
+            }
+        }
+        Ok(())
+    }
+
+    fn cache_kb(&self, scan_id: &str, kb: Kb) -> Result<(), StorageError> {
+        let mut data = self.kbs.as_ref().write()?;
+        if let Some(scan_entry) = data.get_mut(scan_id) {
+            if let Some(kb_entry) = scan_entry.get_mut(&kb.key) {
+                kb_entry.push(kb);
+            } else {
+                scan_entry.insert(kb.key.clone(), vec![kb]);
+            }
+        } else {
+            let mut scan_entry = HashMap::new();
+            scan_entry.insert(kb.key.clone(), vec![kb]);
+            data.insert(scan_id.to_string(), scan_entry);
+        }
+        Ok(())
+    }
+
+    fn cache_notus_advisory(&self, adv: NotusAdvisory) -> Result<(), StorageError> {
+        let mut data = self.advisories.as_ref().write()?;
+        data.insert(adv);
+        Ok(())
+    }
+
+    fn all_vts(&self) -> Result<impl Iterator<Item = item::Nvt>, StorageError> {
+        let vts = self.vts.as_ref().read()?.clone().into_values();
+        let notus = self
+            .advisories
+            .as_ref()
+            .read()?
+            .clone()
+            .into_iter()
+            .map(item::Nvt::from);
+        Ok(vts.chain(notus))
     }
 }
 
 impl Dispatcher for DefaultDispatcher {
     fn dispatch(&self, key: &ContextKey, scope: Field) -> Result<(), StorageError> {
-        let mut data = Arc::as_ref(&self.data).write()?;
-        match data.iter_mut().find(|(k, _)| k == &key.value()) {
-            Some((_, v)) => v.push(scope),
-            None => data.push((key.value(), vec![scope])),
+        match scope {
+            Field::NVT(x) => self.cache_nvt_field(key.as_ref(), x)?,
+            Field::KB(x) => self.cache_kb(key.as_ref(), x)?,
+            Field::NotusAdvisory(x) => {
+                if let Some(x) = *x {
+                    self.cache_notus_advisory(x)?
+                }
+            }
         }
         Ok(())
     }
@@ -317,15 +417,62 @@ impl Retriever for DefaultDispatcher {
         key: &ContextKey,
         scope: Retrieve,
     ) -> Result<Box<dyn Iterator<Item = Field>>, StorageError> {
-        let data = Arc::as_ref(&self.data).read()?;
-        let data = InMemoryDataWrapper::new(data.clone());
-        let skey = key.value();
-        Ok(Box::new(
-            data.into_iter()
-                .filter(move |(k, _)| k == &skey)
-                .flat_map(|(_, v)| v.clone())
-                .filter(move |v| scope.for_field(v)),
-        ))
+        match scope {
+            Retrieve::NVT(None | Some(item::NVTKey::Nvt)) => {
+                // narf, that cannot be efficient
+                let vts = self.all_vts()?.map(|x| x.into());
+                let data = InMemoryDataWrapper {
+                    inner: Box::new(vts),
+                };
+                Ok(Box::new(data.into_iter()))
+            }
+            Retrieve::NVT(Some(item::NVTKey::Version)) => {
+                let version = self.feed_version.as_ref().read()?.clone();
+                let version = Field::NVT(NVTField::Version(version));
+                let data = InMemoryDataWrapper::new(vec![version]);
+                Ok(Box::new(data.into_iter()))
+            }
+            Retrieve::NVT(Some(x)) => {
+                let vts = self
+                    .all_vts()?
+                    .flat_map(move |y| y.key_as_field(x))
+                    .map(|x| x.into());
+                let data = InMemoryDataWrapper {
+                    inner: Box::new(vts),
+                };
+                Ok(Box::new(data.into_iter()))
+            }
+            Retrieve::KB(x) => {
+                let kbs = self.kbs.as_ref().read()?;
+                // TODO: maybe return all when x is empty?
+                if let Some(kbs) = kbs.get(key.as_ref()) {
+                    if let Some(kbs) = kbs.get(&x) {
+                        let data = InMemoryDataWrapper {
+                            inner: Box::new(kbs.clone().into_iter().map(|x| x.into())),
+                        };
+                        return Ok(Box::new(data.into_iter()));
+                    }
+                }
+                Ok(Box::new(vec![].into_iter()))
+            }
+            Retrieve::NotusAdvisory(x) => {
+                let data = self.advisories.as_ref().read()?.clone();
+                match x {
+                    None => {
+                        let data = InMemoryDataWrapper {
+                            inner: Box::new(data.into_iter().map(|x| x.into())),
+                        };
+                        Ok(Box::new(data.into_iter()))
+                    }
+                    Some(_) => {
+                        let data = InMemoryDataWrapper {
+                            inner: Box::new(data.into_iter().map(|x| x.into())),
+                        };
+                        Ok(Box::new(data.into_iter()))
+                    }
+                }
+            }
+        }
     }
 
     fn retrieve_by_field(
@@ -333,28 +480,64 @@ impl Retriever for DefaultDispatcher {
         field: Field,
         scope: Retrieve,
     ) -> Result<Box<dyn Iterator<Item = (ContextKey, Field)>>, StorageError> {
-        let data = Arc::as_ref(&self.data).read()?;
-        let data = InMemoryDataWrapper::new(data.clone());
-        let result = data
-            .into_iter()
-            .filter(move |(_, v)| v.contains(&field))
-            .flat_map(move |(k, v)| {
-                let scope = scope.clone();
-                let scope2 = scope.clone();
-                v.into_iter()
-                    .filter(move |v| scope.for_field(v))
-                    .map(move |v| {
-                        (
-                            match &scope2 {
-                                Retrieve::NVT(_) => ContextKey::FileName(k.clone()),
-                                Retrieve::KB(_) => ContextKey::Scan(k.clone()),
-                                Retrieve::NotusAdvisory(_) => ContextKey::FileName(k.clone()),
-                            },
-                            v,
-                        )
-                    })
-            });
-        Ok(Box::new(result))
+        self.retrieve_by_fields(vec![field], scope)
+    }
+
+    fn retrieve_by_fields(
+        &self,
+        field: Vec<Field>,
+        scope: Retrieve,
+    ) -> Result<Box<dyn Iterator<Item = (ContextKey, Field)>>, StorageError> {
+        match scope {
+            Retrieve::NVT(x) => match x {
+                None | Some(item::NVTKey::Nvt) => {
+                    let vts = self
+                        .all_vts()?
+                        .filter(move |y| y.matches_any_field(&field))
+                        .map(|x| (ContextKey::FileName(x.filename.clone()), x.into()));
+                    let data = InMemoryDataWrapper {
+                        inner: Box::new(vts),
+                    };
+                    Ok(Box::new(data.into_iter()))
+                }
+
+                Some(x) => {
+                    let vts = self.vts.as_ref().read()?.clone().into_iter();
+                    let notus = self
+                        .advisories
+                        .as_ref()
+                        .read()?
+                        .clone()
+                        .into_iter()
+                        .map(|x| (x.filename.clone(), item::Nvt::from(x)));
+                    let vts = vts
+                        .chain(notus)
+                        .filter(move |(_, y)| y.matches_any_field(&field))
+                        .flat_map(move |(k, y)| {
+                            y.key_as_field(x)
+                                .into_iter()
+                                .map(move |x| (ContextKey::FileName(k.clone()), x.into()))
+                        });
+                    let data = InMemoryDataWrapper {
+                        inner: Box::new(vts),
+                    };
+                    Ok(Box::new(data.into_iter()))
+                }
+            },
+            Retrieve::NotusAdvisory(x) => {
+                // are there use cases to get a KB outside of a scan?
+                tracing::warn!(kb=?x, "currently it is assumed that notus advisories are handled as vt, please use Retrieve::NVT for now.");
+                Ok(Box::new(vec![].into_iter()))
+            }
+            Retrieve::KB(x) => {
+                // are there use cases to get a KB outside of a scan?
+                tracing::warn!(
+                    kb = x,
+                    "trying to get kb without scan_id returning empty result"
+                );
+                Ok(Box::new(vec![].into_iter()))
+            }
+        }
     }
 }
 
@@ -375,7 +558,10 @@ mod tests {
             storage
                 .retrieve(&key, Retrieve::NVT(None))?
                 .collect::<Vec<_>>(),
-            vec![NVT(Oid("moep".to_owned()))]
+            vec![NVT(Nvt(item::Nvt {
+                oid: "moep".to_owned(),
+                ..Default::default()
+            }))]
         );
         assert_eq!(
             storage
@@ -393,7 +579,13 @@ mod tests {
             storage
                 .retrieve_by_field(NVT(Oid("moep".to_owned())), Retrieve::NVT(None))?
                 .collect::<Vec<_>>(),
-            vec![(key.clone(), NVT(Oid("moep".to_owned())))]
+            vec![(
+                key.clone(),
+                NVT(Nvt(item::Nvt {
+                    oid: "moep".to_owned(),
+                    ..Default::default()
+                }))
+            )]
         );
         Ok(())
     }
