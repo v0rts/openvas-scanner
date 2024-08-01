@@ -6,7 +6,9 @@
 #![warn(missing_docs)]
 pub mod context;
 pub mod error;
+pub mod function;
 pub mod lookup_keys;
+
 use std::collections::HashMap;
 
 pub use context::{Context, ContextType, Register};
@@ -90,7 +92,7 @@ pub fn get_named_parameter<'a>(
         }
         Some(ct) => match ct {
             ContextType::Value(value) => Ok(value),
-            _ => Err((key, "value", "function").into()),
+            _ => Err(FunctionErrorKind::wrong_argument(key, "value", "function")),
         },
     }
 }
@@ -257,24 +259,15 @@ mod test {
         let target = "localhost";
         let storage = storage::DefaultDispatcher::default();
         let loader = nasl_syntax::NoOpLoader::default();
-        let logger = nasl_syntax::logger::DefaultLogger::default();
-        let context = crate::Context::new(
-            key,
-            target.into(),
-            &storage,
-            &storage,
-            &loader,
-            &logger,
-            &Test,
-        );
+        let context = crate::Context::new(key, target.into(), &storage, &storage, &loader, &Test);
         let mut register = crate::Register::default();
         register.add_local("a", 1.into());
         register.add_local("b", 2.into());
 
         assert!(context.nasl_fn_defined("test"));
         assert_eq!(
-            context.nasl_fn_execute("test", &register),
-            Some(Ok(3.into()))
+            context.nasl_fn_execute("test", &register).unwrap().unwrap(),
+            3.into()
         );
     }
 }

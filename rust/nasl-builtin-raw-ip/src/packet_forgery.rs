@@ -16,7 +16,7 @@ use nasl_builtin_misc::random_impl;
 use nasl_builtin_utils::{
     Context, ContextType, FunctionErrorKind, NaslFunction, NaslVars, Register,
 };
-use nasl_syntax::{logger::NaslLogger, NaslValue};
+use nasl_syntax::NaslValue;
 
 use pcap::Capture;
 use pnet::packet::{
@@ -24,13 +24,16 @@ use pnet::packet::{
     ethernet::EthernetPacket,
     icmp::*,
     ip::{IpNextHeaderProtocol, IpNextHeaderProtocols},
-    ipv4::{checksum, MutableIpv4Packet},
+    ipv4::{checksum, Ipv4Packet, MutableIpv4Packet},
     tcp::{TcpOption, TcpOptionNumbers, TcpPacket, *},
     udp::UdpPacket,
     Packet, PrimitiveValues,
 };
 
+use pnet_macros_support::types::u9be;
 use socket2::{Domain, Protocol, Socket};
+
+use tracing::debug;
 
 macro_rules! custom_error {
     ($a:expr, $b:expr) => {
@@ -61,7 +64,7 @@ const IP_MF: i64 = 0x2000;
 const IP_OFFMASK: i64 = 0x1fff;
 
 /// print the raw packet
-pub fn display_packet(logger: &dyn NaslLogger, vector: &[u8]) {
+pub fn display_packet(vector: &[u8]) {
     let mut s: String = "\n".to_string();
     let mut count = 0;
 
@@ -75,7 +78,7 @@ pub fn display_packet(logger: &dyn NaslLogger, vector: &[u8]) {
             s.push('\n');
         }
     }
-    logger.info(&s);
+    println!("packet = {}", s);
 }
 
 /// Copy from a slice in safe way, performing the necessary test to avoid panicking
@@ -273,8 +276,7 @@ fn set_ip_elements(
     let mut buf = match register.named("ip") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
         _ => {
-            // Missingarguments
-            return Err(FunctionErrorKind::from("ip"));
+            return Err(FunctionErrorKind::missing_argument("ip"));
         }
     };
 
@@ -370,7 +372,7 @@ fn get_ip_element(register: &Register, _configs: &Context) -> Result<NaslValue, 
     let buf = match register.named("ip") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
         _ => {
-            return Err(FunctionErrorKind::from("ip"));
+            return Err(FunctionErrorKind::missing_argument("ip"));
         }
     };
 
@@ -395,13 +397,12 @@ fn get_ip_element(register: &Register, _configs: &Context) -> Result<NaslValue, 
                 "Invalid element".to_string(),
             )),
         },
-        // Missingarguments
-        _ => Err(FunctionErrorKind::from("element")),
+        _ => Err(FunctionErrorKind::missing_argument("element")),
     }
 }
 
 /// Receive a list of IP packets and print them in a readable format in the screen.
-fn dump_ip_packet(register: &Register, configs: &Context) -> Result<NaslValue, FunctionErrorKind> {
+fn dump_ip_packet(register: &Register, _: &Context) -> Result<NaslValue, FunctionErrorKind> {
     let positional = register.positional();
     if positional.is_empty() {
         return Err(FunctionErrorKind::MissingPositionalArguments {
@@ -418,59 +419,19 @@ fn dump_ip_packet(register: &Register, configs: &Context) -> Result<NaslValue, F
                         "No possible to create a packet from buffer".to_string(),
                     )
                 })?;
-                configs.logger().info(&"------\n");
-                configs
-                    .logger()
-                    .info(&format!("\tip_hl  : {:?}", pkt.get_header_length()));
-                configs
-                    .logger()
-                    .info(&format!("\tip_v   : {:?}", pkt.get_version()));
-                configs
-                    .logger()
-                    .info(&format!("\tip_tos : {:?}", pkt.get_dscp()));
-                configs
-                    .logger()
-                    .info(&format!("\tip_len : {:?}", pkt.get_total_length()));
-                configs
-                    .logger()
-                    .info(&format!("\tip_id  : {:?}", pkt.get_identification()));
-                configs
-                    .logger()
-                    .info(&format!("\tip_off : {:?}", pkt.get_fragment_offset()));
-                configs
-                    .logger()
-                    .info(&format!("\tip_ttl : {:?}", pkt.get_ttl()));
 
-                match pkt.get_next_level_protocol() {
-                    IpNextHeaderProtocols::Tcp => configs.logger().info(&format!(
-                        "\tip_p   : IPPROTO_TCP ({:?})",
-                        pkt.get_next_level_protocol().to_primitive_values().0
-                    )),
-                    IpNextHeaderProtocols::Udp => configs.logger().info(&format!(
-                        "\tip_p   : IPPROTO_UDP ({:?})",
-                        pkt.get_next_level_protocol().to_primitive_values().0
-                    )),
-                    IpNextHeaderProtocols::Icmp => configs.logger().info(&format!(
-                        "\tip_p   : IPPROTO_ICMP ({:?})",
-                        pkt.get_next_level_protocol().to_primitive_values().0
-                    )),
-                    _ => configs.logger().info(&format!(
-                        "\tip_p   : IPPROTO_ICMP ({:?})",
-                        pkt.get_next_level_protocol().to_primitive_values().0
-                    )),
-                };
-
-                configs
-                    .logger()
-                    .info(&format!("\tip_sum  : {:?}", pkt.get_checksum()));
-                configs
-                    .logger()
-                    .info(&format!("\tip_src : {:?}", pkt.get_source().to_string()));
-                configs.logger().info(&format!(
-                    "\tip_dst : {:?}",
-                    pkt.get_destination().to_string()
-                ));
-                display_packet(configs.logger(), data);
+                println!("\tip_hl={}", pkt.get_header_length());
+                println!("\tip_v={}", pkt.get_version());
+                println!("\tip_tos={}", pkt.get_dscp());
+                println!("\tip_len={}", pkt.get_total_length());
+                println!("\tip_id={}", pkt.get_identification());
+                println!("\tip_off={}", pkt.get_fragment_offset());
+                println!("\tip_ttl={}", pkt.get_ttl());
+                println!("\tip_p={}", dump_protocol(&pkt));
+                println!("\tip_sum={}", pkt.get_checksum());
+                println!("\tip_src={}", pkt.get_source());
+                println!("\tip_dst={}", pkt.get_destination());
+                display_packet(data);
             }
             _ => {
                 return Err(FunctionErrorKind::WrongArgument(
@@ -481,6 +442,17 @@ fn dump_ip_packet(register: &Register, configs: &Context) -> Result<NaslValue, F
     }
 
     Ok(NaslValue::Null)
+}
+
+fn dump_protocol(pkt: &Ipv4Packet) -> String {
+    let protocol = pkt.get_next_level_protocol();
+    let byte = protocol.to_primitive_values().0;
+    let protocol_name = match protocol {
+        IpNextHeaderProtocols::Tcp => "IPPROTO_TCP",
+        IpNextHeaderProtocols::Udp => "IPPROTO_UDP",
+        _ => "IPPROTO_ICMP",
+    };
+    format!("{} ({})", protocol_name, byte)
 }
 
 /// Add a option to a specified IP datagram.
@@ -496,27 +468,27 @@ fn insert_ip_options(
     let buf = match register.named("ip") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
         _ => {
-            return Err(FunctionErrorKind::from("ip"));
+            return Err(FunctionErrorKind::missing_argument("ip"));
         }
     };
 
     let code = match register.named("code") {
         Some(ContextType::Value(NaslValue::Number(x))) => *x,
         _ => {
-            return Err(FunctionErrorKind::from("code"));
+            return Err(FunctionErrorKind::missing_argument("code"));
         }
     };
     let length = match register.named("length") {
         Some(ContextType::Value(NaslValue::Number(x))) => *x as usize,
         _ => {
-            return Err(FunctionErrorKind::from("length"));
+            return Err(FunctionErrorKind::missing_argument("length"));
         }
     };
     let value = match register.named("value") {
         Some(ContextType::Value(NaslValue::String(x))) => x.as_bytes(),
         Some(ContextType::Value(NaslValue::Data(x))) => x,
         _ => {
-            return Err(FunctionErrorKind::from("value"));
+            return Err(FunctionErrorKind::missing_argument("value"));
         }
     };
 
@@ -594,7 +566,7 @@ fn forge_tcp_packet(
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
         _ => {
             // Missingarguments
-            return Err(FunctionErrorKind::from("ip"));
+            return Err(FunctionErrorKind::missing_argument("ip"));
         }
     };
     let original_ip_len = ip_buf.len();
@@ -716,7 +688,7 @@ fn get_tcp_element(
     let buf = match register.named("tcp") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
         _ => {
-            return Err(FunctionErrorKind::from("tcp"));
+            return Err(FunctionErrorKind::missing_argument("tcp"));
         }
     };
 
@@ -742,7 +714,7 @@ fn get_tcp_element(
             "th_data" => Ok(NaslValue::Data(tcp.payload().to_vec())),
             _ => Err(FunctionErrorKind::WrongArgument("element".to_string())),
         },
-        _ => Err(FunctionErrorKind::from("element")),
+        _ => Err(FunctionErrorKind::missing_argument("element")),
     }
 }
 
@@ -761,7 +733,7 @@ fn get_tcp_option(register: &Register, _configs: &Context) -> Result<NaslValue, 
     let buf = match register.named("tcp") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
         _ => {
-            return Err(FunctionErrorKind::from("tcp"));
+            return Err(FunctionErrorKind::missing_argument("tcp"));
         }
     };
 
@@ -816,7 +788,7 @@ fn get_tcp_option(register: &Register, _configs: &Context) -> Result<NaslValue, 
                 "Invalid option".to_string(),
             )),
         },
-        _ => Err(FunctionErrorKind::from("option")),
+        _ => Err(FunctionErrorKind::missing_argument("option")),
     }
 }
 
@@ -842,7 +814,7 @@ fn set_tcp_elements(
     let buf = match register.named("tcp") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
         _ => {
-            return Err(FunctionErrorKind::from("tcp"));
+            return Err(FunctionErrorKind::missing_argument("tcp"));
         }
     };
 
@@ -1104,7 +1076,7 @@ fn insert_tcp_options(
         FunctionErrorKind::Dirty("No possible to create a packet from buffer".to_string())
     })?;
 
-    // At this point, opts len is a 4bytes multiple and the ofset is expressed in 32bits words
+    // At this point, opts len is a 4bytes multiple and the offset is expressed in 32bits words
     ori_tcp.set_data_offset(5 + opts_len as u8 / 4);
     if !opts.is_empty() {
         ori_tcp.set_options(&opts);
@@ -1165,7 +1137,7 @@ fn insert_tcp_options(
 }
 
 /// Receive a list of IPv4 datagrams and print their TCP part in a readable format in the screen.
-fn dump_tcp_packet(register: &Register, configs: &Context) -> Result<NaslValue, FunctionErrorKind> {
+fn dump_tcp_packet(register: &Register, _: &Context) -> Result<NaslValue, FunctionErrorKind> {
     let positional = register.positional();
     if positional.is_empty() {
         return Err(FunctionErrorKind::Dirty(
@@ -1187,120 +1159,24 @@ fn dump_tcp_packet(register: &Register, configs: &Context) -> Result<NaslValue, 
 
                 match packet::tcp::TcpPacket::new(ip.payload()) {
                     Some(pkt) => {
-                        configs.logger().info(&"------\n");
-                        configs
-                            .logger()
-                            .info(&format!("\tth_sport  : {:?}", pkt.get_source()));
-                        configs
-                            .logger()
-                            .info(&format!("\tth_dport   : {:?}", pkt.get_destination()));
-                        configs
-                            .logger()
-                            .info(&format!("\tth_seq : {:?}", pkt.get_sequence()));
-                        configs
-                            .logger()
-                            .info(&format!("\tth_ack : {:?}", pkt.get_acknowledgement()));
-                        configs
-                            .logger()
-                            .info(&format!("\tth_x2  : {:?}", pkt.get_reserved()));
-                        configs
-                            .logger()
-                            .info(&format!("\tth_off : {:?}", pkt.get_data_offset()));
+                        let th_flags = format_flags(&pkt);
+                        println!("\tth_sport = {}", pkt.get_source());
+                        println!("\tth_dport = {}", pkt.get_destination());
+                        println!("\tth_seq = {}", pkt.get_sequence());
+                        println!("\tth_ack = {}", pkt.get_acknowledgement());
+                        println!("\tth_x2 = {}", pkt.get_reserved());
+                        println!("\tth_off = {}", pkt.get_data_offset());
+                        println!("\tth_win = {}", pkt.get_window());
+                        println!("\tth_sum = {}", pkt.get_checksum());
+                        println!("\tth_urp = {}", pkt.get_urgent_ptr());
+                        println!("\tth_flags = {}", th_flags);
 
-                        let flags = pkt.get_flags();
-                        let mut f = String::new();
-                        f.push_str("\tth_flags : ");
-                        if flags & pnet::packet::tcp::TcpFlags::FIN
-                            == pnet::packet::tcp::TcpFlags::FIN
-                        {
-                            f.push_str("TH_FIN");
-                        }
-                        if flags & pnet::packet::tcp::TcpFlags::SYN
-                            == pnet::packet::tcp::TcpFlags::SYN
-                        {
-                            if !f.is_empty() {
-                                f.push('|')
-                            };
-                            f.push_str("TH_SYN");
-                        }
-                        if flags & pnet::packet::tcp::TcpFlags::RST
-                            == pnet::packet::tcp::TcpFlags::RST
-                        {
-                            if !f.is_empty() {
-                                f.push('|')
-                            };
-                            f.push_str("TH_RST");
-                        }
-                        if flags & pnet::packet::tcp::TcpFlags::PSH
-                            == pnet::packet::tcp::TcpFlags::PSH
-                        {
-                            if !f.is_empty() {
-                                f.push('|')
-                            };
-                            f.push_str("TH_PSH");
-                        }
-                        if flags & pnet::packet::tcp::TcpFlags::ACK
-                            == pnet::packet::tcp::TcpFlags::ACK
-                        {
-                            if !f.is_empty() {
-                                f.push('|')
-                            };
-                            f.push_str("TH_ACK");
-                        }
-                        if flags & pnet::packet::tcp::TcpFlags::URG
-                            == pnet::packet::tcp::TcpFlags::URG
-                        {
-                            if !f.is_empty() {
-                                f.push('|')
-                            };
-                            f.push_str("TH_URG");
-                        }
-                        if f.is_empty() {
-                            f.push_str(" 0");
-                        } else {
-                            f.push_str(&format!(" {:?}", flags));
-                        };
-                        configs.logger().info(&f);
-                        configs
-                            .logger()
-                            .info(&format!("\tth_win  : {:?}", pkt.get_window()));
-                        configs
-                            .logger()
-                            .info(&format!("\tth_sum : {:?}", pkt.get_checksum()));
-                        configs
-                            .logger()
-                            .info(&format!("\tth_urp : {:?}", pkt.get_urgent_ptr()));
-                        println!("\tTCP Options:");
-                        for o in pkt.get_options_iter() {
-                            let n = o.get_number();
-                            let p = o.payload();
-                            if n == TcpOptionNumbers::MSS {
-                                configs
-                                    .logger()
-                                    .info(&format!("\t\tTCPOPT_MAXSEG: {:?}", p));
-                            }
-                            if n == TcpOptionNumbers::WSCALE {
-                                configs
-                                    .logger()
-                                    .info(&format!("\t\tTCPOPT_WINDOW: {:?}", p));
-                            }
-
-                            if n == TcpOptionNumbers::SACK_PERMITTED {
-                                configs
-                                    .logger()
-                                    .info(&format!("\t\tTCPOPT_SACK_PERMITTED: {:?}", p));
-                            }
-                            if n == TcpOptionNumbers::TIMESTAMPS {
-                                configs
-                                    .logger()
-                                    .info(&format!("\t\tTCPOPT_TIMESTAMP TSval: {:?}", p));
-                            }
-                        }
-                        display_packet(configs.logger(), data);
+                        display_opts(&pkt);
+                        display_packet(data);
                     }
                     None => {
                         return Err(FunctionErrorKind::WrongArgument(
-                            "Invalid TPC packet".to_string(),
+                            "Invalid TCP packet".to_string(),
                         ));
                     }
                 }
@@ -1316,6 +1192,44 @@ fn dump_tcp_packet(register: &Register, configs: &Context) -> Result<NaslValue, 
     Ok(NaslValue::Null)
 }
 
+fn display_opts(pkt: &TcpPacket) {
+    for o in pkt.get_options_iter() {
+        let n = o.get_number();
+        let p = o.payload();
+        let name = match n {
+            TcpOptionNumbers::MSS => Some("MAXSEQ"),
+            TcpOptionNumbers::WSCALE => Some("WINDOW"),
+            TcpOptionNumbers::SACK_PERMITTED => Some("SACK_PERMITTED"),
+            TcpOptionNumbers::TIMESTAMPS => Some("TIMESTAMP TSval"),
+            _ => None,
+        };
+        if let Some(name) = name {
+            println!("\t\t{}: {:?}", name, p);
+        }
+    }
+}
+
+fn format_flags(pkt: &TcpPacket) -> String {
+    let flags = pkt.get_flags();
+    let mut flag_strs = vec![];
+    let mut check_flag = |flag: u9be, name: &str| {
+        if flags & flag == flag {
+            flag_strs.push(name.to_owned());
+        }
+    };
+    check_flag(TcpFlags::FIN, "TH_FIN");
+    check_flag(TcpFlags::SYN, "TH_SYN");
+    check_flag(TcpFlags::RST, "TH_RST");
+    check_flag(TcpFlags::PSH, "TH_PSH");
+    check_flag(TcpFlags::ACK, "TH_ACK");
+    check_flag(TcpFlags::URG, "TH_URG");
+    if flag_strs.is_empty() {
+        "0".into()
+    } else {
+        flag_strs.join("|")
+    }
+}
+
 /// Fills an IP datagram with UDP data. Note that the ip_p field is not updated. It returns the modified IP datagram. Its arguments are:
 ///  
 /// - data: is the payload.
@@ -1325,7 +1239,7 @@ fn dump_tcp_packet(register: &Register, configs: &Context) -> Result<NaslValue, 
 /// - uh_sum: is the UDP checksum. Although it is not compulsory, the right value is computed by default.
 /// - uh_ulen: is the data length. By default it is set to the length the data argument plus the size of the UDP header.
 /// - update_ip_len: is a flag (TRUE by default). If set, NASL will recompute the size field of the IP datagram.
-
+///
 /// Returns the modified IP datagram or NULL on error.
 fn forge_udp_packet(
     register: &Register,
@@ -1333,7 +1247,7 @@ fn forge_udp_packet(
 ) -> Result<NaslValue, FunctionErrorKind> {
     let mut ip_buf = match register.named("ip") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
-        _ => return Err(FunctionErrorKind::from("ip")),
+        _ => return Err(FunctionErrorKind::missing_argument("ip")),
     };
     let original_ip_len = ip_buf.len();
 
@@ -1420,7 +1334,7 @@ fn set_udp_elements(
     let buf = match register.named("udp") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
         _ => {
-            return Err(FunctionErrorKind::from("udp"));
+            return Err(FunctionErrorKind::missing_argument("udp"));
         }
     };
 
@@ -1523,13 +1437,18 @@ fn set_udp_elements(
 }
 
 /// Receive a list of IPv4 datagrams and print their UDP part in a readable format in the screen.
-fn dump_udp_packet(register: &Register, configs: &Context) -> Result<NaslValue, FunctionErrorKind> {
+fn dump_udp_packet(register: &Register, _: &Context) -> Result<NaslValue, FunctionErrorKind> {
     let positional = register.positional();
     if positional.is_empty() {
         return Err(FunctionErrorKind::Dirty(
             "Missing arguments. It needs at least one UDP packet".to_string(),
         ));
     }
+    let invalid_udp_packet_error = || {
+        Err(FunctionErrorKind::WrongArgument(
+            "Invalid UDP packet".to_string(),
+        ))
+    };
 
     for udp_datagram in positional.iter() {
         match udp_datagram {
@@ -1537,40 +1456,25 @@ fn dump_udp_packet(register: &Register, configs: &Context) -> Result<NaslValue, 
                 let ip = match packet::ipv4::Ipv4Packet::new(data) {
                     Some(ip) => ip,
                     None => {
-                        return Err(FunctionErrorKind::WrongArgument(
-                            "Invalid UDP packet".to_string(),
-                        ));
+                        return invalid_udp_packet_error();
                     }
                 };
 
                 match packet::udp::UdpPacket::new(ip.payload()) {
                     Some(pkt) => {
-                        configs.logger().info(&"------\n");
-                        configs
-                            .logger()
-                            .info(&format!("\tuh_sport  : {:?}", pkt.get_source()));
-                        configs
-                            .logger()
-                            .info(&format!("\tuh_dport   : {:?}", pkt.get_destination()));
-                        configs
-                            .logger()
-                            .info(&format!("\tuh_len : {:?}", pkt.get_length()));
-                        configs
-                            .logger()
-                            .info(&format!("\tuh_sum : {:?}", pkt.get_checksum()));
-                        display_packet(configs.logger(), data);
+                        println!("\tuh_sport = {}", pkt.get_source());
+                        println!("\tuh_dport = {}", pkt.get_destination());
+                        println!("\tuh_len = {}", pkt.get_length());
+                        println!("\tuh_sum = {}", pkt.get_checksum());
+                        display_packet(data);
                     }
                     None => {
-                        return Err(FunctionErrorKind::WrongArgument(
-                            "Invalid UDP packet".to_string(),
-                        ));
+                        return invalid_udp_packet_error();
                     }
                 }
             }
             _ => {
-                return Err(FunctionErrorKind::WrongArgument(
-                    "Invalid UDP packet".to_string(),
-                ));
+                return invalid_udp_packet_error();
             }
         }
     }
@@ -1595,7 +1499,7 @@ fn get_udp_element(
     let buf = match register.named("udp") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
         _ => {
-            return Err(FunctionErrorKind::from("udp"));
+            return Err(FunctionErrorKind::missing_argument("udp"));
         }
     };
 
@@ -1635,7 +1539,7 @@ fn forge_icmp_packet(
     let mut ip_buf = match register.named("ip") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
         _ => {
-            return Err(FunctionErrorKind::from("icmp"));
+            return Err(FunctionErrorKind::missing_argument("icmp"));
         }
     };
     let original_ip_len = ip_buf.len();
@@ -1733,7 +1637,7 @@ fn get_icmp_element(
     let buf = match register.named("icmp") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
         _ => {
-            return Err(FunctionErrorKind::from("icmp"));
+            return Err(FunctionErrorKind::missing_argument("icmp"));
         }
     };
 
@@ -1782,18 +1686,15 @@ fn get_icmp_element(
             }
             _ => Ok(NaslValue::Null),
         },
-        _ => Err(FunctionErrorKind::from("element")),
+        _ => Err(FunctionErrorKind::missing_argument("element")),
     }
 }
 
 /// Receive a list of IPv4 ICMP packets and print them in a readable format in the screen.
-fn dump_icmp_packet(
-    register: &Register,
-    configs: &Context,
-) -> Result<NaslValue, FunctionErrorKind> {
+fn dump_icmp_packet(register: &Register, _: &Context) -> Result<NaslValue, FunctionErrorKind> {
     let positional = register.positional();
     if positional.is_empty() {
-        return Err(FunctionErrorKind::from("icmp"));
+        return Err(FunctionErrorKind::missing_argument("icmp"));
     }
 
     for icmp_pkt in positional.iter() {
@@ -1835,24 +1736,12 @@ fn dump_icmp_packet(
             data = buf[4..].to_vec();
         }
 
-        configs.logger().info(&"------");
-        configs
-            .logger()
-            .info(&format!("\ticmp_id    : {:?}", icmp_id));
-        configs
-            .logger()
-            .info(&format!("\ticmp_code  : {:?}", icmp.get_icmp_code()));
-        configs
-            .logger()
-            .info(&format!("\ticmp_type  : {:?}", icmp.get_icmp_type()));
-        configs
-            .logger()
-            .info(&format!("\ticmp_seq   : {:?}", icmp_seq));
-        configs
-            .logger()
-            .info(&format!("\ticmp_cksum : {:?}", icmp.get_checksum()));
-        configs.logger().info(&format!("\tData       : {:?}", data));
-        configs.logger().info(&"\n");
+        println!("\ticmp_id    = {}", icmp_id);
+        println!("\ticmp_code  = {:?}", icmp.get_icmp_code());
+        println!("\ticmp_type  = {:?}", icmp.get_icmp_type());
+        println!("\ticmp_seq   = {}", icmp_seq);
+        println!("\ticmp_cksum = {}", icmp.get_checksum());
+        println!("\tdata       = {:?}", data);
     }
     Ok(NaslValue::Null)
 }
@@ -1937,7 +1826,7 @@ fn forge_igmp_packet(
     let mut ip_buf = match register.named("ip") {
         Some(ContextType::Value(NaslValue::Data(d))) => d.clone(),
         _ => {
-            return Err(FunctionErrorKind::from("igmp"));
+            return Err(FunctionErrorKind::missing_argument("igmp"));
         }
     };
     let original_ip_len = ip_buf.len();
@@ -2074,7 +1963,12 @@ fn nasl_tcp_ping(register: &Register, configs: &Context) -> Result<NaslValue, Fu
     let port = match register.named("port") {
         Some(ContextType::Value(NaslValue::Number(x))) => *x,
         None => 0, //TODO: implement plug_get_host_open_port()
-        _ => return Err(("Number", "Invalid length value").into()),
+        _ => {
+            return Err(FunctionErrorKind::wrong_unnamed_argument(
+                "Number",
+                "Invalid length value",
+            ))
+        }
     };
 
     if islocalhost(target_ip) {
@@ -2145,7 +2039,7 @@ fn nasl_tcp_ping(register: &Register, configs: &Context) -> Result<NaslValue, Fu
         let sockaddr = socket2::SockAddr::from(SocketAddr::new(target_ip, 0));
         match soc.send_to(ip.packet(), &sockaddr) {
             Ok(b) => {
-                configs.logger().debug(&format!("Sent {} bytes", b));
+                debug!("Sent {} bytes", b);
             }
             Err(e) => {
                 return Err(FunctionErrorKind::Dirty(format!("send_packet: {}", e)));
@@ -2181,25 +2075,45 @@ fn nasl_send_packet(
     let use_pcap = match register.named("pcap_active") {
         Some(ContextType::Value(NaslValue::Boolean(x))) => *x,
         None => true,
-        _ => return Err(("Boolean", "Invalid pcap_active value").into()),
+        _ => {
+            return Err(FunctionErrorKind::wrong_unnamed_argument(
+                "Boolean",
+                "Invalid pcap_active value",
+            ))
+        }
     };
 
     let filter = match register.named("pcap_filter") {
         Some(ContextType::Value(NaslValue::String(x))) => x.to_string(),
         None => String::new(),
-        _ => return Err(("String", "Invalid pcap_filter value").into()),
+        _ => {
+            return Err(FunctionErrorKind::wrong_unnamed_argument(
+                "String",
+                "Invalid pcap_filter value",
+            ))
+        }
     };
 
     let timeout = match register.named("pcap_timeout") {
         Some(ContextType::Value(NaslValue::Number(x))) => *x as i32 * 1000i32, // to milliseconds
         None => DEFAULT_TIMEOUT,
-        _ => return Err(("Integer", "Invalid timeout value").into()),
+        _ => {
+            return Err(FunctionErrorKind::wrong_unnamed_argument(
+                "Integer",
+                "Invalid timeout value",
+            ))
+        }
     };
 
     let mut allow_broadcast = match register.named("allow_broadcast") {
         Some(ContextType::Value(NaslValue::Boolean(x))) => *x,
         None => false,
-        _ => return Err(("Boolean", "Invalid allow_broadcast value").into()),
+        _ => {
+            return Err(FunctionErrorKind::wrong_unnamed_argument(
+                "Boolean",
+                "Invalid allow_broadcast value",
+            ))
+        }
     };
 
     let positional = register.positional();
@@ -2219,7 +2133,12 @@ fn nasl_send_packet(
     let _dflt_packet_sz = match register.named("length") {
         Some(ContextType::Value(NaslValue::Number(x))) => *x,
         None => 0,
-        _ => return Err(("Number", "Invalid length value").into()),
+        _ => {
+            return Err(FunctionErrorKind::wrong_unnamed_argument(
+                "Number",
+                "Invalid length value",
+            ))
+        }
     };
 
     // Get the iface name, to set the capture device.
@@ -2238,7 +2157,12 @@ fn nasl_send_packet(
     for pkt in positional.iter() {
         let packet_raw = match pkt {
             NaslValue::Data(data) => data as &[u8],
-            _ => return Err(("Data", "Invalid packet").into()),
+            _ => {
+                return Err(FunctionErrorKind::wrong_unnamed_argument(
+                    "Data",
+                    "Invalid packet",
+                ))
+            }
         };
         let packet = packet::ipv4::Ipv4Packet::new(packet_raw).ok_or_else(|| {
             FunctionErrorKind::Dirty("No possible to create a packet from buffer".to_string())
@@ -2274,7 +2198,7 @@ fn nasl_send_packet(
 
         match soc.send_to(packet_raw, &sockaddr) {
             Ok(b) => {
-                configs.logger().debug(&format!("Sent {} bytes", b));
+                debug!("Sent {} bytes", b);
             }
             Err(e) => {
                 return Err(FunctionErrorKind::Diagnostic(
@@ -2320,19 +2244,34 @@ fn nasl_send_capture(
     let interface = match register.named("interface") {
         Some(ContextType::Value(NaslValue::String(x))) => x.to_string(),
         None => String::new(),
-        _ => return Err(("String", "Invalid interface value").into()),
+        _ => {
+            return Err(FunctionErrorKind::wrong_unnamed_argument(
+                "String",
+                "Invalid interface value",
+            ))
+        }
     };
 
     let filter = match register.named("pcap_filter") {
         Some(ContextType::Value(NaslValue::String(x))) => x.to_string(),
         None => String::new(),
-        _ => return Err(("String", "Invalid pcap_filter value").into()),
+        _ => {
+            return Err(FunctionErrorKind::wrong_unnamed_argument(
+                "String",
+                "Invalid pcap_filter value",
+            ))
+        }
     };
 
     let timeout = match register.named("pcap_timeout") {
         Some(ContextType::Value(NaslValue::Number(x))) => *x as i32 * 1000i32, // to milliseconds
         None => DEFAULT_TIMEOUT,
-        _ => return Err(("Integer", "Invalid timeout value").into()),
+        _ => {
+            return Err(FunctionErrorKind::wrong_unnamed_argument(
+                "Integer",
+                "Invalid timeout value",
+            ))
+        }
     };
 
     // Get the iface name, to set the capture device.

@@ -23,9 +23,6 @@ enum Crypt {
     Decrypt,
 }
 
-/// Decodes given string as hex and returns the result as a byte array
-// TODO only used in tests, move tests to its own module and define there
-
 pub(crate) fn lookup(function_name: &str) -> Option<NaslFunction> {
     aes_ccm::lookup(function_name)
         .or_else(|| hmac::lookup(function_name))
@@ -65,8 +62,12 @@ fn get_required_named_data<'a>(
     match register.named(key) {
         Some(ContextType::Value(NaslValue::Data(x))) => Ok(x.as_slice()),
         Some(ContextType::Value(NaslValue::String(x))) => Ok(x.as_bytes()),
-        Some(x) => Err((key, "a String or Data Value", format!("{:?}", x).as_str()).into()),
-        _ => Err((key).into()),
+        Some(x) => Err(FunctionErrorKind::wrong_argument(
+            key,
+            "a String or Data Value",
+            format!("{:?}", x).as_str(),
+        )),
+        _ => Err(FunctionErrorKind::missing_argument(key)),
     }
 }
 
@@ -80,7 +81,11 @@ fn get_optional_named_number(
 ) -> Result<Option<i64>, FunctionErrorKind> {
     match register.named(key) {
         Some(ContextType::Value(NaslValue::Number(x))) => Ok(Some(*x)),
-        Some(x) => Err((key, "a Number Value", format!("{:?}", x).as_str()).into()),
+        Some(x) => Err(FunctionErrorKind::wrong_argument(
+            key,
+            "a Number Value",
+            format!("{:?}", x).as_str(),
+        )),
         _ => Ok(None),
     }
 }
