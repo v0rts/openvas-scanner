@@ -186,6 +186,9 @@ pub trait NVTStorer {
 
     /// Returns the currently stored feed hash.
     async fn feed_hash(&self) -> Vec<FeedHash>;
+
+    /// Returns the current feed version, if any.
+    async fn current_feed_version(&self) -> Result<String, Error>;
 }
 
 #[async_trait]
