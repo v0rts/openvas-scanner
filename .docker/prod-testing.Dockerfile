@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install --no-install-recommends --no-install-sugge
     libksba-dev \
     libpaho-mqtt-dev \
     libpcap-dev \
+    libgcrypt-dev \
     libssh-dev \
     libbsd-dev \
     libgnutls30t64 \
@@ -71,6 +72,7 @@ RUN apt-get install --no-install-recommends --no-install-suggests -y \
   libpopt0 \
   libcurl4 \
   libhiredis1.1.0 \
+  libcurl3t64-gnutls \
   zlib1g
 RUN rm -rf /var/lib/apt/lists/*
 COPY .docker/openvas.conf /etc/openvas/
