@@ -4,13 +4,20 @@
 
 //! Defines the context used within the interpreter and utilized by the builtin functions
 
-use crate::nasl::syntax::{Loader, NaslValue, Statement};
-use crate::storage::{ContextKey, Dispatcher, Retriever};
+use itertools::Itertools;
 
+use crate::nasl::builtin::KBError;
+use crate::nasl::syntax::{Loader, NaslValue, Statement};
+use crate::nasl::{FromNaslValue, WithErrorInfo};
+use crate::storage::{ContextKey, Dispatcher, Field, Retrieve, Retriever};
+
+use super::error::ReturnBehavior;
+use super::hosts::resolve;
+use super::FnError;
 use super::{executor::Executor, lookup_keys::FC_ANON_ARGS};
 
 /// Contexts are responsible to locate, add and delete everything that is declared within a NASL plugin
-
+///
 /// Represents a Value within the NaslContext
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextType {
@@ -170,7 +177,7 @@ impl Register {
     }
 
     /// Finds a named ContextType
-    pub fn named<'a>(&'a self, name: &'a str) -> Option<&ContextType> {
+    pub fn named<'a>(&'a self, name: &'a str) -> Option<&'a ContextType> {
         self.blocks
             .last()
             .and_then(|x| x.named(self, name))
@@ -178,7 +185,7 @@ impl Register {
     }
 
     /// Finds a named ContextType with index
-    pub fn index_named<'a>(&'a self, name: &'a str) -> Option<(usize, &ContextType)> {
+    pub fn index_named<'a>(&'a self, name: &'a str) -> Option<(usize, &'a ContextType)> {
         self.blocks.last().and_then(|x| x.named(self, name))
     }
 
@@ -289,7 +296,10 @@ impl Default for Register {
     }
 }
 use std::collections::HashMap;
-use std::net::{AddrParseError, IpAddr};
+use std::net::IpAddr;
+use std::str::FromStr;
+use std::sync::Mutex;
+
 type Named = HashMap<String, ContextType>;
 
 /// NaslContext is a struct to contain variables and if root declared functions
@@ -317,7 +327,7 @@ impl NaslContext {
         &'a self,
         registrat: &'a Register,
         name: &'a str,
-    ) -> Option<(usize, &ContextType)> {
+    ) -> Option<(usize, &'a ContextType)> {
         // first check local
         match self.defined.get(name) {
             Some(ctx) => Some((self.id, ctx)),
@@ -329,6 +339,56 @@ impl NaslContext {
     }
 }
 
+#[derive(Debug)]
+pub struct Target {
+    /// The original target. IP or hostname
+    target: String,
+    /// The IP address. Always has a valid IP. It defaults to 127.0.0.1 if not possible to resolve target.
+    ip_addr: IpAddr,
+    // The shared state is guarded by a mutex. This is a `std::sync::Mutex` and
+    // not a Tokio mutex. This is because there are no asynchronous operations
+    // being performed while holding the mutex. Additionally, the critical
+    // sections are very small.
+    //
+    // A Tokio mutex is mostly intended to be used when locks need to be held
+    // across `.await` yield points. All other cases are **usually** best
+    // served by a std mutex. If the critical section does not include any
+    // async operations but is long (CPU intensive or performing blocking
+    // operations), then the entire operation, including waiting for the mutex,
+    // is considered a "blocking" operation and `tokio::task::spawn_blocking`
+    // should be used.
+    /// vhost list which resolve to the IP address and their sources.
+    vhosts: Mutex<Vec<(String, String)>>,
+}
+
+impl Target {
+    pub fn set_target(&mut self, target: String) -> &Target {
+        // Target can be an ip address or a hostname
+        self.target = target;
+
+        // Store the IpAddr if possible, else default to localhost
+        self.ip_addr = match resolve(self.target.clone()) {
+            Ok(a) => *a.first().unwrap_or(&IpAddr::from_str("127.0.0.1").unwrap()),
+            Err(_) => IpAddr::from_str("127.0.0.1").unwrap(),
+        };
+        self
+    }
+
+    pub fn add_hostname(&self, hostname: String, source: String) -> &Target {
+        self.vhosts.lock().unwrap().push((hostname, source));
+        self
+    }
+}
+
+impl Default for Target {
+    fn default() -> Self {
+        Self {
+            target: String::new(),
+            ip_addr: IpAddr::from_str("127.0.0.1").unwrap(),
+            vhosts: Mutex::new(vec![]),
+        }
+    }
+}
 /// Configurations
 ///
 /// This struct includes all objects that a nasl function requires.
@@ -337,7 +397,7 @@ pub struct Context<'a> {
     /// key for this context. A file name or a scan id
     key: ContextKey,
     /// target to run a scan against
-    target: String,
+    target: Target,
     /// Default Dispatcher
     dispatcher: &'a dyn Dispatcher,
     /// Default Retriever
@@ -352,7 +412,7 @@ impl<'a> Context<'a> {
     /// Creates an empty configuration
     pub fn new(
         key: ContextKey,
-        target: String,
+        target: Target,
         dispatcher: &'a dyn Dispatcher,
         retriever: &'a dyn Retriever,
         loader: &'a dyn Loader,
@@ -394,18 +454,27 @@ impl<'a> Context<'a> {
         &self.key
     }
 
-    /// Get the target host
+    /// Get the target IP as string
     pub fn target(&self) -> &str {
-        &self.target
+        &self.target.target
     }
 
-    /// Get the target host
-    pub fn target_ip(&self) -> Result<IpAddr, AddrParseError> {
-        match self.target() {
-            x if !x.is_empty() => x.to_string(),
-            _ => "127.0.0.1".to_string(),
-        }
-        .parse()
+    /// Get the target host as IpAddr enum member
+    pub fn target_ip(&self) -> IpAddr {
+        self.target.ip_addr
+    }
+
+    /// Get the target VHost list
+    pub fn target_vhosts(&self) -> Vec<(String, String)> {
+        self.target.vhosts.lock().unwrap().clone()
+    }
+
+    pub fn set_target(&mut self, target: String) {
+        self.target.target = target;
+    }
+
+    pub fn add_hostname(&self, hostname: String, source: String) {
+        self.target.add_hostname(hostname, source);
     }
 
     /// Get the storage
@@ -421,6 +490,40 @@ impl<'a> Context<'a> {
     /// Get the loader
     pub fn loader(&self) -> &dyn Loader {
         self.loader
+    }
+
+    /// Return a single item from the knowledge base.
+    /// If multiple entries are found (which would result
+    /// in forking the interpreter), return an error.
+    /// This function automatically converts the item
+    /// to a specific type via its `FromNaslValue` impl
+    /// and returns the appropriate error if necessary.
+    pub fn get_single_kb_item<T: for<'b> FromNaslValue<'b>>(
+        &self,
+        name: &str,
+    ) -> Result<T, FnError> {
+        // If we find multiple or no items at all, return an error that
+        // exits the script instead of continuing execution with a return
+        // value, since this is most likely an error in the feed.
+        let val = self
+            .get_single_kb_item_inner(name)
+            .map_err(|e| e.with(ReturnBehavior::ExitScript))?;
+        T::from_nasl_value(&val)
+    }
+
+    fn get_single_kb_item_inner(&self, name: &str) -> Result<NaslValue, FnError> {
+        let result = self
+            .retriever()
+            .retrieve(&self.key, Retrieve::KB(name.to_string()))?;
+        let single_item = result
+            .filter_map(|field| match field {
+                Field::KB(kb) => Some(kb.value.into()),
+                _ => None,
+            })
+            .at_most_one()
+            .map_err(|_| KBError::MultipleItemsFound(name.to_string()))?
+            .ok_or_else(|| KBError::ItemNotFound(name.to_string()))?;
+        Ok(single_item)
     }
 }
 

@@ -33,7 +33,7 @@ use sequoia_ipc::keybox::{Keybox, KeyboxRecord};
 use sequoia_openpgp as openpgp;
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Error)]
 /// Defines error cases that can happen while verifying
 pub enum Error {
     #[error("Incorrect feed.")]
@@ -329,7 +329,7 @@ pub struct HashSumFileItem<'a> {
     reader: &'a FSPluginLoader,
 }
 
-impl<'a> HashSumFileItem<'a> {
+impl HashSumFileItem<'_> {
     /// Verifies Hashsum
     pub fn verify(&self) -> Result<(), Error> {
         let hashsum = self.hasher.hash(

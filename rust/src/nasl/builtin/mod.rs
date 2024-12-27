@@ -8,6 +8,7 @@ mod array;
 mod cert;
 mod cryptographic;
 mod description;
+mod error;
 mod host;
 mod http;
 mod isotime;
@@ -20,15 +21,20 @@ mod regex;
 mod report_functions;
 mod ssh;
 mod string;
+mod sys;
 
 #[cfg(test)]
 mod tests;
 
-pub use ssh::SshError;
+pub use error::BuiltinError;
+pub use host::HostError;
+pub use knowledge_base::KBError;
 
 use crate::nasl::syntax::{Loader, NoOpLoader};
 use crate::nasl::utils::{Context, Executor, NaslVarRegister, NaslVarRegisterBuilder, Register};
 use crate::storage::{ContextKey, DefaultDispatcher, Storage};
+
+use super::utils::context::Target;
 
 /// Creates a new Executor and adds all the functions to it.
 ///
@@ -53,6 +59,7 @@ pub fn nasl_std_functions() -> Executor {
         .add_set(description::Description)
         .add_set(isotime::NaslIsotime)
         .add_set(cryptographic::rc4::CipherHandlers::default())
+        .add_set(sys::Sys)
         .add_set(ssh::Ssh::default())
         .add_set(cert::NaslCerts::default());
 
@@ -137,11 +144,12 @@ where
 
     /// Creates a new Context with the shared loader, logger and function register
     pub fn build(&self, key: ContextKey) -> Context {
-        let target = match &key {
+        let mut target = Target::default();
+        target.set_target(match &key {
             ContextKey::Scan(_, Some(target)) => target.clone(),
             ContextKey::Scan(_, None) => String::default(),
             ContextKey::FileName(target) => target.clone(),
-        };
+        });
         Context::new(
             key,
             target,

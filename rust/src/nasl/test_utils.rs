@@ -24,7 +24,7 @@ use super::{
 // The following exists to trick the trait solver into
 // believing me that everything is fine. Doing this naively
 // runs into some compiler errors.
-trait CloneableFn: Fn(NaslResult) -> bool + Sync + Send {
+trait CloneableFn: Fn(&NaslResult) -> bool + Sync + Send {
     fn clone_box<'a>(&self) -> Box<dyn 'a + CloneableFn>
     where
         Self: 'a;
@@ -32,7 +32,7 @@ trait CloneableFn: Fn(NaslResult) -> bool + Sync + Send {
 
 impl<F> CloneableFn for F
 where
-    F: Fn(NaslResult) -> bool + Clone + Sync + Send,
+    F: Fn(&NaslResult) -> bool + Clone + Sync + Send,
 {
     fn clone_box<'a>(&self) -> Box<dyn 'a + CloneableFn>
     where
@@ -184,7 +184,7 @@ where
     pub fn check(
         &mut self,
         line: impl Into<String>,
-        f: impl Fn(NaslResult) -> bool + 'static + Clone + Sync + Send,
+        f: impl Fn(&NaslResult) -> bool + 'static + Clone + Sync + Send,
         expected: Option<impl Into<String>>,
     ) -> &mut Self {
         self.add_line(
@@ -262,7 +262,7 @@ where
         }
     }
 
-    async fn verify(&mut self) {
+    async fn verify(&mut self) -> Result<(), String> {
         if self.should_verify {
             let mut references_iter = self.results.iter().enumerate();
             let code = self.code();
@@ -270,7 +270,7 @@ where
             let mut results = self.results_stream(&code, &context);
             while let Some(result) = results.next().await {
                 let (line_count, reference) = references_iter.next().unwrap();
-                self.check_result(&result, reference, line_count);
+                self.check_result(&result, reference, line_count)?;
             }
             assert!(references_iter.next().is_none());
         } else {
@@ -281,57 +281,59 @@ where
                 .iter()
                 .any(|res| !matches!(res.result, TestResult::None))
             {
-                panic!("Take care: Will not verify specified test result in this test, since run_all was called, which will mess with the line numbers.");
+                return Err("Take care: Will not verify specified test result in this test, since run_all was called, which will mess with the line numbers.".to_string());
             }
         }
+        Ok(())
     }
 
     pub async fn async_verify(mut self) {
-        self.verify().await;
-        // Make sure we don't Drop
-        std::mem::forget(self)
+        if let Err(err) = self.verify().await {
+            // Drop first so we don't call the destructor, which would panic.
+            std::mem::forget(self);
+            panic!("{}", err)
+        } else {
+            std::mem::forget(self)
+        }
     }
 
     fn check_result(
         &self,
-        result: &Result<NaslValue, FunctionErrorKind>,
+        result: &Result<NaslValue, FnError>,
         reference: &TracedTestResult,
         line_count: usize,
-    ) {
+    ) -> Result<(), String> {
         if !self.compare_result(result, &reference.result) {
             match &reference.result {
                 TestResult::Ok(reference_result) => {
-                    panic!(
+                    Err(format!(
                         "Mismatch at {}.\nIn code \"{}\":\nExpected: {:?}\nFound:    {:?}",
                         reference.location,
                         self.lines[line_count],
-                        Ok::<_, FunctionErrorKind>(reference_result),
+                        Ok::<_, FnError>(reference_result),
                         result,
-                    );
+                    ))?;
                 }
                 TestResult::GenericCheck(_, expected) => match expected {
-                    Some(expected) => panic!(
+                    Some(expected) => Err(format!(
                         "Mismatch at {}.\nIn code \"{}\":\nExpected: {}\nFound:    {:?}",
                         reference.location, self.lines[line_count], expected, result
-                    ),
-                    None => panic!(
+                    ))?,
+                    None => Err(format!(
                         "Check failed at {}.\nIn code \"{}\". Found result: {:?}",
                         reference.location, self.lines[line_count], result
-                    ),
+                    ))?,
                 },
                 TestResult::None => unreachable!(),
             }
         }
+        Ok(())
     }
 
-    fn compare_result(
-        &self,
-        result: &Result<NaslValue, FunctionErrorKind>,
-        reference: &TestResult,
-    ) -> bool {
+    fn compare_result(&self, result: &Result<NaslValue, FnError>, reference: &TestResult) -> bool {
         match reference {
-            TestResult::Ok(val) => result.as_ref() == Ok(val),
-            TestResult::GenericCheck(f, _) => f(result.clone()),
+            TestResult::Ok(val) => result.as_ref().unwrap() == val,
+            TestResult::GenericCheck(f, _) => f(result),
             TestResult::None => true,
         }
     }
@@ -374,7 +376,9 @@ impl<L: Loader, S: Storage> Drop for TestBuilder<L, S> {
         if tokio::runtime::Handle::try_current().is_ok() {
             panic!("To use TestBuilder in an asynchronous context, explicitly call async_verify()");
         } else {
-            futures::executor::block_on(self.verify());
+            if let Err(err) = futures::executor::block_on(self.verify()) {
+                panic!("{}", err)
+            }
         }
     }
 }
@@ -398,11 +402,32 @@ pub fn check_code_result(code: &str, expected: impl ToNaslResult) {
 #[macro_export]
 macro_rules! check_err_matches {
     ($t: ident, $code: expr, $pat: pat $(,)?) => {
-        $t.check($code, |e| matches!(e, Err($pat)), Some(stringify!($pat)));
+        $t.check(
+            $code,
+            |e| {
+                if let Err(e) = e {
+                    // Convert with try_into to allow using
+                    // the variants of `FnErrorKind` directly without
+                    // having to wrap them in the outer enum.
+                    let converted = e.try_into();
+                    // This is only irrefutable for the
+                    // FnError -> FnError conversion but not for others.
+                    #[allow(irrefutable_let_patterns)]
+                    if let Ok(e) = converted {
+                        matches!(e, &$pat)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            },
+            Some(stringify!($pat)),
+        );
     };
     ($code: expr, $pat: pat $(,)?) => {
         let mut t = $crate::nasl::test_utils::TestBuilder::default();
-        t.check($code, |e| matches!(e, Err($pat)), Some(stringify!($pat)));
+        check_err_matches!(t, $code, $pat);
     };
 }
 

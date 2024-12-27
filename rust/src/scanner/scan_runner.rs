@@ -118,6 +118,7 @@ pub(super) mod tests {
     use crate::models::Target;
     use crate::models::VT;
     use crate::nasl::syntax::NaslValue;
+    use crate::nasl::utils::context::Target as ContextTarget;
     use crate::nasl::utils::Context;
     use crate::nasl::utils::Executor;
     use crate::nasl::utils::Register;
@@ -320,7 +321,7 @@ exit({rc});
         let storage = DefaultDispatcher::new();
 
         let register = Register::root_initial(&initial);
-        let target = String::default();
+        let target = ContextTarget::default();
         let functions = nasl_std_functions();
         let loader = |_: &str| code.to_string();
         let key = ContextKey::FileName(id.to_string());
@@ -394,18 +395,14 @@ exit({rc});
         dispatcher: DefaultDispatcher,
     ) -> (Vec<ScriptResult>, Vec<ScriptResult>) {
         let result = run(vts.to_vec(), dispatcher).await.expect("success run");
-        let success = result
-            .clone()
+        let (success, rest): (Vec<_>, Vec<_>) = result
             .into_iter()
             .filter_map(|x| x.ok())
-            .filter(|x| x.has_succeeded())
-            .collect::<Vec<_>>();
-        let failure = result
+            .partition(|x| x.has_succeeded());
+        let failure = rest
             .into_iter()
-            .filter_map(|x| x.ok())
-            .filter(|x| x.has_failed())
-            .filter(|x| x.has_not_run())
-            .collect::<Vec<_>>();
+            .filter(|x| !x.has_succeeded() && x.has_not_run())
+            .collect();
         (success, failure)
     }
 
