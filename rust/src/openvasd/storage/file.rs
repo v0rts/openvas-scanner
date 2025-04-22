@@ -15,12 +15,12 @@ use models::{Scan, Status};
 use scannerlib::{
     models,
     storage::{
+        error::StorageError,
         infisto::{
-            ChaCha20IndexFileStorer, Serialization,
-            {IndexedByteStorage, IndexedByteStorageIterator, IndexedFileStorer, Range},
+            ChaCha20IndexFileStorer, IndexedByteStorage, IndexedByteStorageIterator,
+            IndexedFileStorer, Range, Serialization,
         },
-        item::Nvt,
-        ContextKey, DefaultDispatcher, StorageError,
+        inmemory::InMemoryStorage,
     },
 };
 use tokio::task::spawn_blocking;
@@ -30,7 +30,7 @@ use super::{inmemory, *};
 pub struct Storage<S> {
     storage: Arc<RwLock<S>>,
     // we use inmemory for NVT and KB items as we need to continuously when starting or running a
-    // scan. KB items should be deleted when a scan is finished.
+    // scan. KB items should be deleted when a target/scan is finished.
     underlying: inmemory::Storage<crypt::ChaCha20Crypt>,
 }
 
@@ -54,12 +54,6 @@ where
     let ifs = IndexedFileStorer::init(path)?;
     let ifs = ChaCha20IndexFileStorer::new(ifs, key);
     Ok(Storage::new(ifs, feeds))
-}
-
-impl From<scannerlib::storage::infisto::Error> for Error {
-    fn from(e: scannerlib::storage::infisto::Error) -> Self {
-        Self::Storage(Box::new(e))
-    }
 }
 
 impl<S> Storage<S> {
@@ -240,7 +234,7 @@ where
         let id = scan.scan_id.clone();
         let key = format!("scan_{id}");
         let status_key = format!("status_{id}");
-        let storage = Arc::clone(&self.storage);
+        let storage = self.storage.clone();
         spawn_blocking(move || {
             let scan = Serialization::serialize(scan)?;
             let status = Serialization::serialize(Status::default())?;
@@ -389,11 +383,11 @@ where
         self.underlying.synchronize_feeds(hash).await
     }
 
-    async fn oids(&self) -> Result<Box<dyn Iterator<Item = String> + Send>, Error> {
+    async fn oids(&self) -> Result<Vec<String>, Error> {
         self.underlying.oids().await
     }
 
-    async fn vts<'a>(&self) -> Result<Box<dyn Iterator<Item = Nvt> + Send + 'a>, Error> {
+    async fn vts<'a>(&self) -> Result<Vec<Nvt>, Error> {
         self.underlying.vts().await
     }
 
@@ -402,7 +396,11 @@ where
     }
 
     async fn current_feed_version(&self) -> Result<String, Error> {
-        todo!()
+        self.underlying.current_feed_version().await
+    }
+
+    async fn vt_by_oid(&self, oid: &str) -> Result<Option<Nvt>, Error> {
+        self.underlying.vt_by_oid(oid).await
     }
 }
 
@@ -430,17 +428,17 @@ impl<S> super::ResultHandler for Storage<S>
 where
     S: IndexedByteStorage + Sync + Send + Clone + 'static,
 {
-    fn underlying_storage(&self) -> &Arc<DefaultDispatcher> {
+    fn underlying_storage(&self) -> &Arc<InMemoryStorage> {
         self.underlying.underlying_storage()
     }
 
-    fn handle_result<E>(&self, key: &ContextKey, result: models::Result) -> Result<(), E>
+    fn handle_result<E>(&self, key: &str, result: models::Result) -> Result<(), E>
     where
         E: From<StorageError>,
     {
         tracing::trace!(?key, ?result);
         let store = &mut self.storage.write().unwrap();
-        let key = format!("results_{}", key.value());
+        let key = format!("results_{}", key);
 
         let ilen = match store.indices(&key) {
             Ok(x) => x.len(),
@@ -461,16 +459,12 @@ where
         Ok(())
     }
 
-    fn remove_result<E>(
-        &self,
-        key: &ContextKey,
-        idx: Option<usize>,
-    ) -> Result<Vec<models::Result>, E>
+    fn remove_result<E>(&self, key: &str, idx: Option<usize>) -> Result<Vec<models::Result>, E>
     where
         E: From<StorageError>,
     {
         let deleted_results = self
-            .get_results_sync(key.as_ref(), idx, idx.map(|x| x + 1))
+            .get_results_sync(key, idx, idx.map(|x| x + 1))
             .map_err(|x| StorageError::Dirty(x.to_string()))?
             .filter_map(|x| serde_json::de::from_slice(&x).ok())
             .collect();
@@ -478,9 +472,11 @@ where
             // is unsupported as then the result index wouldn't match tyhye file index anymore
             // which could have side effects for get results in the openvasd api as we store the
             // json as is.
-            tracing::warn!("called an unsupported function to delete a result within the file storage, ignoring");
+            tracing::warn!(
+                "called an unsupported function to delete a result within the file storage, ignoring"
+            );
         } else {
-            let key = format!("results_{}", key.value());
+            let key = format!("results_{}", key);
             let store = &mut self.storage.write().unwrap();
             store
                 .remove(&key)
@@ -495,10 +491,7 @@ pub(crate) mod tests {
     use std::{env::current_dir, fs};
 
     use models::{Phase, Scan, Status};
-    use scannerlib::storage::{
-        infisto::{CachedIndexFileStorer, IndexedByteStorage},
-        ContextKey,
-    };
+    use scannerlib::storage::infisto::{CachedIndexFileStorer, IndexedByteStorage};
     use tracing::debug;
 
     use crate::{
@@ -591,7 +584,7 @@ pub(crate) mod tests {
         scan.scan_id = "aha".to_string();
         let tmp_path = "/tmp/openvasd/credential";
         clear_tmp_files(Path::new(tmp_path));
-        let storage = example_feed_file_storage(&tmp_path).await;
+        let storage = example_feed_file_storage(tmp_path).await;
         storage.insert_scan(scan.clone()).await.unwrap();
         let (scan2, _) = storage.get_scan("aha").await.unwrap();
         assert_eq!(scan, scan2);
@@ -602,11 +595,11 @@ pub(crate) mod tests {
         let file_storage = example_feed_file_storage("/tmp/openvasd/oids").await;
         let feeds = file_storage.feed_hash().await;
         file_storage.synchronize_feeds(feeds.clone()).await.unwrap();
-        let amount_file_oids = file_storage.oids().await.unwrap().count();
+        let amount_file_oids = file_storage.oids().await.unwrap().len();
 
         let memory_storage = inmemory::Storage::new(ChaCha20Crypt::default(), feeds.clone());
         memory_storage.synchronize_feeds(feeds).await.unwrap();
-        let amount_memory_oids = memory_storage.oids().await.unwrap().count();
+        let amount_memory_oids = memory_storage.oids().await.unwrap().len();
         assert_eq!(amount_memory_oids, 9);
         assert_eq!(amount_memory_oids, amount_file_oids);
     }
@@ -666,9 +659,7 @@ pub(crate) mod tests {
             .filter_map(|x| x.ok())
             .collect();
         assert_eq!(2, range.len());
-        let deleted_results = storage
-            .remove_result::<Error>(&ContextKey::Scan("42".to_string(), None), None)
-            .unwrap();
+        let deleted_results = storage.remove_result::<Error>("42", None).unwrap();
         assert_eq!(deleted_results.len(), range.len());
         let range: Vec<String> = storage
             .get_results("42", None, None)

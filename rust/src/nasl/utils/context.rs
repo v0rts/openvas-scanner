@@ -4,17 +4,35 @@
 
 //! Defines the context used within the interpreter and utilized by the builtin functions
 
-use itertools::Itertools;
+use tokio::sync::RwLock;
 
-use crate::nasl::builtin::KBError;
+use crate::models::PortRange;
+use crate::nasl::builtin::{KBError, NaslSockets};
 use crate::nasl::syntax::{Loader, NaslValue, Statement};
-use crate::nasl::{FromNaslValue, WithErrorInfo};
-use crate::storage::{ContextKey, Dispatcher, Field, Retrieve, Retriever};
+use crate::nasl::{ArgumentError, FromNaslValue, WithErrorInfo};
+use crate::storage::error::StorageError;
+use crate::storage::infisto::json::JsonStorage;
+use crate::storage::inmemory::InMemoryStorage;
+use crate::storage::items::kb::{self, KbKey};
+use crate::storage::items::kb::{GetKbContextKey, KbContextKey, KbItem};
+use crate::storage::items::nvt::{Feed, FeedVersion, FileName, Nvt};
+use crate::storage::items::nvt::{NvtField, Oid};
+use crate::storage::items::result::{ResultContextKeyAll, ResultContextKeySingle, ResultItem};
+use crate::storage::redis::{
+    RedisAddAdvisory, RedisAddNvt, RedisGetNvt, RedisStorage, RedisWrapper,
+};
+use crate::storage::{self, ScanID};
+use crate::storage::{Dispatcher, Remover, Retriever};
+use rand::seq::SliceRandom;
+use std::sync::MutexGuard;
 
-use super::error::ReturnBehavior;
-use super::hosts::resolve;
 use super::FnError;
-use super::{executor::Executor, lookup_keys::FC_ANON_ARGS};
+use super::error::ReturnBehavior;
+use super::hosts::{LOCALHOST, resolve_hostname};
+use super::{
+    executor::Executor,
+    lookup_keys::{FC_ANON_ARGS, SCRIPT_PARAMS},
+};
 
 /// Contexts are responsible to locate, add and delete everything that is declared within a NASL plugin
 ///
@@ -121,7 +139,7 @@ impl From<HashMap<String, NaslValue>> for ContextType {
 /// When creating a new context call a corresponding create method.
 /// Warning since those will be stored within a vector each context must be manually
 /// deleted by calling drop_last when the context runs out of scope.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Register {
     blocks: Vec<NaslContext>,
 }
@@ -196,6 +214,18 @@ impl Register {
             .map(|x| x.defined.keys().map(|x| x.as_str()))
     }
 
+    /// Find a named argument and return its value as a variable
+    /// or an error otherwise
+    pub(crate) fn nasl_value<'a>(&'a self, arg: &'a str) -> Result<&'a NaslValue, ArgumentError> {
+        match self.named(arg) {
+            Some(ContextType::Value(val)) => Ok(val),
+            Some(_) => Err(ArgumentError::WrongArgument(format!(
+                "Argument {arg} is a function but should be a value."
+            ))),
+            None => Err(ArgumentError::MissingNamed(vec![arg.to_string()])),
+        }
+    }
+
     /// Adds a named parameter to the root context
     pub fn add_global(&mut self, name: &str, value: ContextType) {
         let global = &mut self.blocks[0];
@@ -205,7 +235,9 @@ impl Register {
     /// Adds a named parameter to a specified context
     pub fn add_to_index(&mut self, idx: usize, name: &str, value: ContextType) {
         if idx >= self.blocks.len() {
-            panic!("The given index should be retrieved by named_value. Therefore this should not happen.");
+            panic!(
+                "The given index should be retrieved by named_value. Therefore this should not happen."
+            );
         } else {
             let ctx = &mut self.blocks[idx];
             ctx.add_named(name, value);
@@ -223,6 +255,14 @@ impl Register {
         match self.named(FC_ANON_ARGS) {
             Some(ContextType::Value(NaslValue::Array(arr))) => arr,
             _ => &[],
+        }
+    }
+
+    /// Retrieves a script parameter by id
+    pub fn script_param(&self, id: usize) -> Option<NaslValue> {
+        match self.named(format!("{SCRIPT_PARAMS}_{id}").as_str()) {
+            Some(ContextType::Value(v)) => Some(v.clone()),
+            _ => None,
         }
     }
 
@@ -296,9 +336,10 @@ impl Default for Register {
     }
 }
 use std::collections::HashMap;
+use std::io::Write;
 use std::net::IpAddr;
-use std::str::FromStr;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 type Named = HashMap<String, ContextType>;
 
@@ -306,7 +347,7 @@ type Named = HashMap<String, ContextType>;
 ///
 /// A context should never be created directly but via a Register.
 /// The reason for that is that a Registrat contains all blocks and a block must be registered to ensure that each Block must be created via an Registrat.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct NaslContext {
     /// Parent id within the register
     parent: Option<usize>,
@@ -339,12 +380,44 @@ impl NaslContext {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub struct VHost {
+    source: String,
+    hostname: String,
+}
+
+impl VHost {
+    pub fn hostname(&self) -> &str {
+        &self.hostname
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Target {
     /// The original target. IP or hostname
-    target: String,
-    /// The IP address. Always has a valid IP. It defaults to 127.0.0.1 if not possible to resolve target.
+    original_target_str: String,
+    /// The IP address of the target.
     ip_addr: IpAddr,
+    /// Whether the string given to `Target` was a hostname or an ip address.
+    kind: TargetKind,
+}
+
+/// Specifies whether the string given to `Target` was a hostname
+/// or an ip address.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TargetKind {
+    Hostname,
+    IpAddr,
+}
+
+#[derive(Debug)]
+pub struct CtxTarget {
+    /// The target
+    target: Target,
     // The shared state is guarded by a mutex. This is a `std::sync::Mutex` and
     // not a Tokio mutex. This is because there are no asynchronous operations
     // being performed while holding the mutex. Additionally, the critical
@@ -358,85 +431,201 @@ pub struct Target {
     // is considered a "blocking" operation and `tokio::task::spawn_blocking`
     // should be used.
     /// vhost list which resolve to the IP address and their sources.
-    vhosts: Mutex<Vec<(String, String)>>,
+    vhosts: Mutex<Vec<VHost>>,
 }
 
 impl Target {
-    pub fn set_target(&mut self, target: String) -> &Target {
-        // Target can be an ip address or a hostname
-        self.target = target;
-
-        // Store the IpAddr if possible, else default to localhost
-        self.ip_addr = match resolve(self.target.clone()) {
-            Ok(a) => *a.first().unwrap_or(&IpAddr::from_str("127.0.0.1").unwrap()),
-            Err(_) => IpAddr::from_str("127.0.0.1").unwrap(),
-        };
-        self
+    pub fn localhost() -> Self {
+        Self {
+            original_target_str: LOCALHOST.to_string(),
+            ip_addr: LOCALHOST,
+            kind: TargetKind::IpAddr,
+        }
     }
 
-    pub fn add_hostname(&self, hostname: String, source: String) -> &Target {
-        self.vhosts.lock().unwrap().push((hostname, source));
-        self
+    #[cfg(test)]
+    pub fn do_not_resolve_hostname(target: impl AsRef<str>) -> Self {
+        let (ip_addr, kind) = match target.as_ref().parse::<IpAddr>() {
+            Ok(ip_addr) => (ip_addr, TargetKind::IpAddr),
+            Err(_) => (LOCALHOST, TargetKind::Hostname),
+        };
+        Self {
+            original_target_str: target.as_ref().into(),
+            ip_addr,
+            kind,
+        }
+    }
+
+    pub fn resolve_hostname(target: impl AsRef<str>) -> Option<Self> {
+        // Try to parse as IpAddr first
+        let (ip_addr, kind) = if let Ok(ip_addr) = target.as_ref().parse::<IpAddr>() {
+            (ip_addr, TargetKind::IpAddr)
+        } else {
+            let ip_addr = resolve_hostname(target.as_ref())
+                .ok()
+                .and_then(|ip_addrs| ip_addrs.into_iter().next())?;
+            (ip_addr, TargetKind::Hostname)
+        };
+        Some(Self {
+            original_target_str: target.as_ref().into(),
+            ip_addr,
+            kind,
+        })
+    }
+
+    pub fn original_target_str(&self) -> &str {
+        &self.original_target_str
+    }
+
+    pub fn ip_addr(&self) -> IpAddr {
+        self.ip_addr
+    }
+
+    pub fn kind(&self) -> &TargetKind {
+        &self.kind
     }
 }
 
-impl Default for Target {
-    fn default() -> Self {
-        Self {
-            target: String::new(),
-            ip_addr: IpAddr::from_str("127.0.0.1").unwrap(),
+impl From<Target> for CtxTarget {
+    fn from(value: Target) -> Self {
+        CtxTarget {
+            target: value,
             vhosts: Mutex::new(vec![]),
         }
     }
 }
-/// Configurations
-///
-/// This struct includes all objects that a nasl function requires.
-/// New objects must be added here in
+
+impl CtxTarget {
+    pub fn add_hostname(&self, hostname: String, source: String) -> &CtxTarget {
+        self.vhosts.lock().unwrap().push(VHost { hostname, source });
+        self
+    }
+
+    pub fn original_target_str(&self) -> &str {
+        &self.target.original_target_str
+    }
+
+    pub fn ip_addr(&self) -> IpAddr {
+        self.target.ip_addr
+    }
+
+    pub fn kind(&self) -> &TargetKind {
+        &self.target.kind
+    }
+
+    /// Return the hostname that this `Target` was constructed with
+    /// or None otherwise
+    pub fn hostname(&self) -> Option<String> {
+        match self.target.kind {
+            TargetKind::Hostname => Some(self.target.original_target_str.clone()),
+            TargetKind::IpAddr => None,
+        }
+    }
+
+    pub fn vhosts(&self) -> MutexGuard<'_, Vec<VHost>> {
+        self.vhosts.lock().unwrap()
+    }
+}
+
+pub trait ContextStorage:
+    Sync
+    + Send
+    // kb
+    + Dispatcher<KbContextKey, Item = KbItem>
+    + Retriever<KbContextKey, Item = Vec<KbItem>>
+    + Retriever<GetKbContextKey, Item = Vec<(String, Vec<KbItem>)>>
+    + Remover<KbContextKey, Item = Vec<KbItem>>
+    // results
+    + Dispatcher<ScanID, Item = ResultItem>
+    + Retriever<ResultContextKeySingle, Item = ResultItem>
+    + Retriever<ResultContextKeyAll, Item = Vec<ResultItem>>
+    + Remover<ResultContextKeySingle, Item = ResultItem>
+    + Remover<ResultContextKeyAll, Item = Vec<ResultItem>>
+    // nvt
+    + Dispatcher<FileName, Item = Nvt>
+    + Dispatcher<FeedVersion, Item = String>
+    + Retriever<FeedVersion, Item = String>
+    + Retriever<Feed, Item = Vec<Nvt>>
+    + Retriever<Oid, Item = Nvt> + Retriever<FileName, Item = Nvt>
+{
+    /// By default the KbKey can hold multiple values. When dispatch is used on an already existing
+    /// KbKey, the value is appended to the existing list. This function is used to replace the
+    /// existing entry with the new one.
+    fn dispatch_replace(&self, key: KbContextKey, item: KbItem) -> Result<(), StorageError> {
+        self.remove(&key)?;
+        self.dispatch(key, item)
+    }
+
+}
+impl ContextStorage for InMemoryStorage {}
+impl<T: Write + Send> ContextStorage for JsonStorage<T> {}
+impl<T> ContextStorage for RedisStorage<T> where
+    T: RedisWrapper + RedisAddNvt + RedisAddAdvisory + RedisGetNvt + Send
+{
+}
+impl<T> ContextStorage for Arc<T> where T: ContextStorage {}
+
+/// NASL execution context.
 pub struct Context<'a> {
-    /// key for this context. A file name or a scan id
-    key: ContextKey,
-    /// target to run a scan against
-    target: Target,
-    /// Default Dispatcher
-    dispatcher: &'a dyn Dispatcher,
-    /// Default Retriever
-    retriever: &'a dyn Retriever,
-    /// Default Loader
+    /// The key for this context.
+    scan: ScanID,
+    /// Target against which the scan is run.
+    target: CtxTarget,
+    /// Filename of the current script
+    filename: PathBuf,
+    /// Storage
+    storage: &'a dyn ContextStorage,
+    /// Loader
     loader: &'a dyn Loader,
-    /// Default function executor.
+    /// Function executor.
     executor: &'a Executor,
+    /// NVT object, which is put into the storage, when set
+    nvt: Mutex<Option<Nvt>>,
+    sockets: RwLock<NaslSockets>,
 }
 
 impl<'a> Context<'a> {
-    /// Creates an empty configuration
-    pub fn new(
-        key: ContextKey,
-        target: Target,
-        dispatcher: &'a dyn Dispatcher,
-        retriever: &'a dyn Retriever,
+    fn new(
+        scan: ScanID,
+        target: CtxTarget,
+        filename: PathBuf,
+        storage: &'a dyn ContextStorage,
         loader: &'a dyn Loader,
         executor: &'a Executor,
     ) -> Self {
         Self {
-            key,
+            scan,
             target,
-            dispatcher,
-            retriever,
+            filename,
+            storage,
             loader,
             executor,
+            nvt: Mutex::new(None),
+            sockets: RwLock::new(NaslSockets::default()),
         }
     }
 
     /// Executes a function by name
     ///
     /// Returns None when the function was not found.
-    pub async fn nasl_fn_execute(
+    pub async fn execute_builtin_fn(
         &self,
         name: &str,
         register: &Register,
     ) -> Option<super::NaslResult> {
-        self.executor.exec(name, self, register).await
+        const NUM_RETRIES_ON_RETRYABLE_ERROR: usize = 5;
+
+        let mut i = 0;
+        loop {
+            i += 1;
+            let result = self.executor.exec(name, self, register).await;
+            if let Some(Err(ref e)) = result {
+                if e.retryable() && i < NUM_RETRIES_ON_RETRYABLE_ERROR {
+                    continue;
+                }
+            }
+            return result;
+        }
     }
 
     /// Checks if a function is defined
@@ -450,46 +639,116 @@ impl<'a> Context<'a> {
     }
 
     /// Get the Key
-    pub fn key(&self) -> &ContextKey {
-        &self.key
+    pub fn scan(&self) -> &ScanID {
+        &self.scan
     }
 
-    /// Get the target IP as string
-    pub fn target(&self) -> &str {
-        &self.target.target
+    pub fn filename(&self) -> &PathBuf {
+        &self.filename
     }
 
-    /// Get the target host as IpAddr enum member
-    pub fn target_ip(&self) -> IpAddr {
-        self.target.ip_addr
-    }
-
-    /// Get the target VHost list
-    pub fn target_vhosts(&self) -> Vec<(String, String)> {
-        self.target.vhosts.lock().unwrap().clone()
-    }
-
-    pub fn set_target(&mut self, target: String) {
-        self.target.target = target;
+    /// Get the `CtxTarget`
+    pub fn target(&self) -> &CtxTarget {
+        &self.target
     }
 
     pub fn add_hostname(&self, hostname: String, source: String) {
         self.target.add_hostname(hostname, source);
     }
 
-    /// Get the storage
-    pub fn dispatcher(&self) -> &dyn Dispatcher {
-        self.dispatcher
+    pub fn port_range(&self) -> PortRange {
+        // TODO Get this from the scan prefs
+        PortRange {
+            start: 0,
+            end: None,
+        }
     }
 
     /// Get the storage
-    pub fn retriever(&self) -> &dyn Retriever {
-        self.retriever
+    pub fn storage(&self) -> &dyn ContextStorage {
+        self.storage
     }
-
     /// Get the loader
     pub fn loader(&self) -> &dyn Loader {
         self.loader
+    }
+
+    pub fn set_nvt_field(&self, field: NvtField) {
+        let mut nvt = self.nvt.lock().unwrap();
+        match nvt.as_mut() {
+            Some(nvt) => {
+                nvt.set_from_field(field);
+            }
+            _ => {
+                let mut new = Nvt {
+                    filename: self.filename().to_string_lossy().to_string(),
+                    ..Default::default()
+                };
+                new.set_from_field(field);
+                *nvt = Some(new);
+            }
+        }
+    }
+
+    pub fn dispatch_nvt(&self, nvt: Nvt) {
+        self.storage
+            .dispatch(FileName(self.filename.to_string_lossy().to_string()), nvt)
+            .unwrap();
+    }
+
+    pub fn set_nvt(&self, vt: Nvt) {
+        let mut nvt = self.nvt.lock().unwrap();
+        *nvt = Some(vt);
+    }
+
+    pub fn nvt(&self) -> MutexGuard<'_, Option<Nvt>> {
+        self.nvt.lock().unwrap()
+    }
+
+    fn kb_key(&self, key: KbKey) -> KbContextKey {
+        KbContextKey(
+            (
+                self.scan.clone(),
+                storage::Target(self.target.original_target_str().to_string()),
+            ),
+            key,
+        )
+    }
+
+    pub fn set_kb_item(&self, key: KbKey, value: KbItem) -> Result<(), FnError> {
+        self.storage.dispatch(self.kb_key(key), value)?;
+        Ok(())
+    }
+
+    pub fn get_kb_item(&self, key: &KbKey) -> Result<Vec<KbItem>, FnError> {
+        let result = self
+            .storage
+            .retrieve(&self.kb_key(key.clone()))?
+            .unwrap_or_default();
+        Ok(result)
+    }
+
+    pub fn get_kb_items_with_keys(
+        &self,
+        key: &KbKey,
+    ) -> Result<Vec<(String, Vec<KbItem>)>, FnError> {
+        let result = self
+            .storage
+            .retrieve(&GetKbContextKey(
+                (
+                    self.scan.clone(),
+                    storage::Target(self.target.original_target_str().into()),
+                ),
+                key.clone(),
+            ))?
+            .unwrap_or_default();
+        Ok(result)
+    }
+
+    pub fn set_single_kb_item<T: Into<KbItem>>(&self, key: KbKey, value: T) -> Result<(), FnError> {
+        self.storage
+            .dispatch_replace(self.kb_key(key), value.into())?;
+        Ok(())
     }
 
     /// Return a single item from the knowledge base.
@@ -500,30 +759,96 @@ impl<'a> Context<'a> {
     /// and returns the appropriate error if necessary.
     pub fn get_single_kb_item<T: for<'b> FromNaslValue<'b>>(
         &self,
-        name: &str,
+        key: &KbKey,
     ) -> Result<T, FnError> {
         // If we find multiple or no items at all, return an error that
         // exits the script instead of continuing execution with a return
         // value, since this is most likely an error in the feed.
         let val = self
-            .get_single_kb_item_inner(name)
+            .get_single_kb_item_inner(key)
             .map_err(|e| e.with(ReturnBehavior::ExitScript))?;
-        T::from_nasl_value(&val)
+        T::from_nasl_value(&val.into())
     }
 
-    fn get_single_kb_item_inner(&self, name: &str) -> Result<NaslValue, FnError> {
-        let result = self
-            .retriever()
-            .retrieve(&self.key, Retrieve::KB(name.to_string()))?;
-        let single_item = result
-            .filter_map(|field| match field {
-                Field::KB(kb) => Some(kb.value.into()),
+    fn get_single_kb_item_inner(&self, key: &KbKey) -> Result<KbItem, FnError> {
+        let result = self.storage().retrieve(&self.kb_key(key.clone()))?;
+        let item = result.ok_or_else(|| KBError::ItemNotFound(key.to_string()))?;
+
+        match item.len() {
+            0 => Ok(KbItem::Null),
+            1 => Ok(item[0].clone()),
+            _ => Err(KBError::MultipleItemsFound(key.to_string()).into()),
+        }
+    }
+    // TODO: Check which KbKey is used for Port Transport
+    /// Sets the state of a port
+    pub fn set_port_transport(&self, port: u16, transport: usize) -> Result<(), FnError> {
+        self.set_single_kb_item(
+            KbKey::Port(kb::Port::Tcp(port.to_string())),
+            KbItem::Number(transport as i64),
+        )
+    }
+
+    pub fn get_port_transport(&self, port: u16) -> Result<Option<i64>, FnError> {
+        self.get_single_kb_item_inner(&KbKey::Port(kb::Port::Tcp(port.to_string())))
+            .map(|x| match x {
+                KbItem::Number(n) => Some(n),
                 _ => None,
             })
-            .at_most_one()
-            .map_err(|_| KBError::MultipleItemsFound(name.to_string()))?
-            .ok_or_else(|| KBError::ItemNotFound(name.to_string()))?;
-        Ok(single_item)
+    }
+
+    /// Don't always return the first open port, otherwise
+    /// we might get bitten by OSes doing active SYN flood
+    /// countermeasures. Also, avoid returning 80 and 21 as
+    /// open ports, as many transparent proxies are acting for these...
+    pub fn get_host_open_port(&self) -> Result<u16, FnError> {
+        let mut open21 = false;
+        let mut open80 = false;
+        let ports: Vec<u16> = self
+            .get_kb_items_with_keys(&KbKey::Port(kb::Port::Tcp("*".to_string())))?
+            .iter()
+            .filter_map(|x| {
+                x.0.split('/').next_back().and_then(|x| {
+                    if x == "21" {
+                        open21 = true;
+                        None
+                    } else if x == "80" {
+                        open80 = true;
+                        None
+                    } else {
+                        x.parse::<u16>().ok()
+                    }
+                })
+            })
+            .collect();
+
+        let ret = if ports.is_empty() {
+            *ports.choose(&mut rand::thread_rng()).unwrap()
+        } else if open21 {
+            21
+        } else if open80 {
+            80
+        } else {
+            0
+        };
+        Ok(ret)
+    }
+
+    pub async fn read_sockets(&self) -> tokio::sync::RwLockReadGuard<'_, NaslSockets> {
+        self.sockets.read().await
+    }
+
+    pub async fn write_sockets(&self) -> tokio::sync::RwLockWriteGuard<'_, NaslSockets> {
+        self.sockets.write().await
+    }
+}
+
+impl Drop for Context<'_> {
+    fn drop(&mut self) {
+        let mut nvt = self.nvt.lock().unwrap();
+        if let Some(nvt) = nvt.take() {
+            self.dispatch_nvt(nvt);
+        }
     }
 }
 
@@ -533,5 +858,53 @@ impl From<&ContextType> for NaslValue {
             ContextType::Function(_, _) => NaslValue::Null,
             ContextType::Value(v) => v.to_owned(),
         }
+    }
+}
+
+pub struct ContextBuilder<'a, P: AsRef<Path>> {
+    pub storage: &'a dyn ContextStorage,
+    pub loader: &'a dyn Loader,
+    pub executor: &'a Executor,
+    pub scan_id: ScanID,
+    pub target: Target,
+    pub filename: P,
+}
+
+impl<'a, P: AsRef<Path>> ContextBuilder<'a, P> {
+    /// Builds the `Context`.
+    pub fn build(self) -> Context<'a> {
+        Context::new(
+            self.scan_id,
+            self.target.into(),
+            self.filename.as_ref().to_owned(),
+            self.storage,
+            self.loader,
+            self.executor,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::nasl::utils::context::TargetKind;
+
+    use super::Target;
+
+    #[test]
+    fn target_kind() {
+        assert_eq!(
+            Target::do_not_resolve_hostname("1.2.3.4").kind(),
+            &TargetKind::IpAddr
+        );
+        assert_eq!(
+            Target::do_not_resolve_hostname("foo").kind(),
+            &TargetKind::Hostname
+        );
+        // This should not do any actual resolution
+        // but immediately parse the IP address instead.
+        assert_eq!(
+            Target::resolve_hostname("1.2.3.4").unwrap().kind(),
+            &TargetKind::IpAddr
+        );
     }
 }

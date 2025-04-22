@@ -15,8 +15,9 @@ mod isotime;
 mod knowledge_base;
 mod misc;
 mod network;
+mod preferences;
 #[cfg(feature = "nasl-builtin-raw-ip")]
-mod raw_ip;
+pub mod raw_ip;
 mod regex;
 mod report_functions;
 mod ssh;
@@ -30,11 +31,11 @@ pub use error::BuiltinError;
 pub use host::HostError;
 pub use knowledge_base::KBError;
 
-use crate::nasl::syntax::{Loader, NoOpLoader};
-use crate::nasl::utils::{Context, Executor, NaslVarRegister, NaslVarRegisterBuilder, Register};
-use crate::storage::{ContextKey, DefaultDispatcher, Storage};
+use crate::nasl::utils::{NaslVarRegister, NaslVarRegisterBuilder, Register};
 
-use super::utils::context::Target;
+use super::utils::Executor;
+
+pub use network::socket::NaslSockets;
 
 /// Creates a new Executor and adds all the functions to it.
 ///
@@ -52,12 +53,13 @@ pub fn nasl_std_functions() -> Executor {
         .add_set(string::NaslString)
         .add_set(host::Host)
         .add_set(http::NaslHttp::default())
-        .add_set(network::socket::NaslSockets::default())
+        .add_set(network::socket::SocketFns)
         .add_set(network::network::Network)
         .add_set(regex::RegularExpressions)
         .add_set(cryptographic::Cryptographic)
         .add_set(description::Description)
         .add_set(isotime::NaslIsotime)
+        .add_set(preferences::Preferences)
         .add_set(cryptographic::rc4::CipherHandlers::default())
         .add_set(sys::Sys)
         .add_set(ssh::Ssh::default())
@@ -94,71 +96,6 @@ fn add_raw_ip_vars(builder: NaslVarRegisterBuilder) -> NaslVarRegisterBuilder {
 #[cfg(not(feature = "nasl-builtin-raw-ip"))]
 fn add_raw_ip_vars(builder: NaslVarRegisterBuilder) -> NaslVarRegisterBuilder {
     builder
-}
-
-/// The context builder.
-///
-/// This is the main entry point for the nasl interpreter and adds all the functions defined in
-/// [nasl_std_functions] to functions register.
-// TODO: remove key and target and box dyn
-pub struct ContextFactory<Loader, Storage> {
-    /// The shared storage
-    pub storage: Storage,
-    /// The loader to load the nasl files.
-    pub loader: Loader,
-    /// The functions available to the nasl script.
-    pub functions: Executor,
-}
-
-impl Default for ContextFactory<NoOpLoader, DefaultDispatcher> {
-    fn default() -> Self {
-        Self {
-            loader: NoOpLoader::default(),
-            functions: nasl_std_functions(),
-            storage: DefaultDispatcher::default(),
-        }
-    }
-}
-
-impl<L, S> ContextFactory<L, S>
-where
-    L: Loader,
-    S: Storage,
-{
-    /// Creates a new ContextFactory with nasl_std_functions
-    ///
-    /// If you want to override the functions register please use functions method.
-    pub fn new(loader: L, storage: S) -> ContextFactory<L, S> {
-        ContextFactory {
-            storage,
-            loader,
-            functions: nasl_std_functions(),
-        }
-    }
-
-    /// Sets the functions available to the nasl script.
-    pub fn functions(mut self, functions: Executor) -> Self {
-        self.functions = functions;
-        self
-    }
-
-    /// Creates a new Context with the shared loader, logger and function register
-    pub fn build(&self, key: ContextKey) -> Context {
-        let mut target = Target::default();
-        target.set_target(match &key {
-            ContextKey::Scan(_, Some(target)) => target.clone(),
-            ContextKey::Scan(_, None) => String::default(),
-            ContextKey::FileName(target) => target.clone(),
-        });
-        Context::new(
-            key,
-            target,
-            self.storage.as_dispatcher(),
-            self.storage.as_retriever(),
-            &self.loader,
-            &self.functions,
-        )
-    }
 }
 
 /// The register builder for NASL Variables

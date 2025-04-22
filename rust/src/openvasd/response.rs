@@ -6,7 +6,7 @@ use std::{
     convert::Infallible,
     error::Error,
     pin::Pin,
-    sync::{mpsc::Receiver, Arc},
+    sync::{Arc, mpsc::Receiver},
     task::Poll,
     thread,
 };
@@ -220,7 +220,7 @@ impl Response {
                     return;
                 };
             }
-            if value.map(|v| send(SendState::Bytes(false, v))).any(|x| x) {
+            if value.any(|v| send(SendState::Bytes(false, v))) {
                 return;
             }
 

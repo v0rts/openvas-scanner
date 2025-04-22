@@ -564,7 +564,7 @@ func_is_internal (const char *name)
 }
 
 char *
-nasl_version ()
+nasl_version (void)
 {
   static char vers[sizeof (OPENVASLIB_VERSION) + 1];
   strncpy (vers, OPENVASLIB_VERSION, sizeof (vers) - 1);

@@ -29,6 +29,30 @@ pub enum LoadError {
     Dirty(String),
 }
 
+impl LoadError {
+    pub fn filename(&self) -> &str {
+        match self {
+            LoadError::Retry(x) => x,
+            LoadError::NotFound(x) => x,
+            LoadError::PermissionDenied(x) => x,
+            LoadError::Dirty(x) => x,
+        }
+    }
+}
+
+/// Loads the content of the path to String
+///
+/// First it tries to read utf-8 if that fails then it tries again by calling load_non_utf8_path.
+pub fn load_from_path<P>(path: &P) -> Result<String, LoadError>
+where
+    P: AsRef<Path> + ?Sized,
+{
+    match fs::read_to_string(path) {
+        Ok(x) => Ok(x),
+        Err(_) => load_non_utf8_path(path),
+    }
+}
+
 /// Loads the content of the path to String by parsing each byte to a character.
 ///
 /// Unfortunately the feed is not completely written in utf8 enforcing us to parse the content
@@ -147,7 +171,7 @@ impl Loader for FSPluginLoader {
             )));
         }
         // unfortunately nasl is still in iso-8859-1
-        load_non_utf8_path(path.as_path())
+        load_from_path(path.as_path())
     }
     /// Return the root path of the plugins directory
     fn root_path(&self) -> Result<String, LoadError> {

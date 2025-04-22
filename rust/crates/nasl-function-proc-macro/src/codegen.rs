@@ -1,7 +1,7 @@
 use crate::types::*;
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{token::Async, Ident, ItemFn, Signature};
+use syn::{Ident, ItemFn, Signature, token::Async};
 
 impl<'a> ArgsStruct<'a> {
     fn positional(&self) -> impl Iterator<Item = (&Arg<'a>, &PositionalArg)> + '_ {
@@ -88,6 +88,18 @@ impl<'a> ArgsStruct<'a> {
                     ArgKind::Register => {
                         quote! {
                             _register
+                        }
+                    },
+                    ArgKind::NaslSockets(arg) => {
+                        if arg.mutable {
+                            quote! {
+                                &mut *_context.write_sockets().await
+                            }
+                        }
+                        else {
+                            quote! {
+                                &*_context.read_sockets().await
+                            }
                         }
                     },
                     ArgKind::PositionalIterator(arg) => {

@@ -3,13 +3,55 @@
 // SPDX-License-Identifier: GPL-2.0-or-later WITH x11vnc-openssl-exception
 
 use super::{Package, PackageVersion};
-use lazy_regex::{lazy_regex, Lazy, Regex};
+use lazy_regex::{Lazy, Regex, lazy_regex};
 use std::cmp::Ordering;
 
 /// Used for parsing the full name of a package
-static RE: Lazy<Regex> = lazy_regex!(r"^(.*)-(?:(\d+):)?([^-]+)-([^-]+)\.([^-]+)$");
+static RE: Lazy<Regex> = lazy_regex!(
+    r"^(?x)
+    (?P<name>
+        .*
+    )
+    -
+    (?:
+        (?P<epoch>
+            \d+
+        )
+        :
+    )?
+    (?P<version>
+        [^-]+
+    )
+    -
+    (?P<release>
+        [^-]+
+    )
+    \.
+    (?P<arch>
+        [^-]+
+    )$"
+);
 /// Used for parsing the full version of a package
-static RE_VERSION: Lazy<Regex> = lazy_regex!(r"^(?:(\d+):)?([^-]+)-([^-]+)\.([^-]+)$");
+static RE_VERSION: Lazy<Regex> = lazy_regex!(
+    r"^(?x)
+    (?:
+        (?P<epoch>
+            \d+
+        )
+        :
+    )?
+    (?P<version>
+        [^-]+
+    )
+    -
+    (?P<release>
+        [^-]+
+    )
+    \.
+    (?P<arch>
+        [^-]+
+    )$"
+);
 
 /// Represent a based Redhat package
 #[derive(Debug, PartialEq, Clone)]
@@ -44,20 +86,11 @@ impl PartialOrd for Rpm {
             return None;
         }
 
-        if self.epoch != other.epoch {
-            return match self.epoch > other.epoch {
-                true => Some(Ordering::Greater),
-                false => Some(Ordering::Less),
-            };
-        };
-
-        if let Some(comp) = self.version.partial_cmp(&other.version) {
-            if comp.is_ne() {
-                return Some(comp);
-            }
-        }
-
-        self.release.partial_cmp(&other.release)
+        (&self.epoch, &self.version, &self.release).partial_cmp(&(
+            &other.epoch,
+            &other.version,
+            &other.release,
+        ))
     }
 }
 

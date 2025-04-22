@@ -1,9 +1,13 @@
+// SPDX-FileCopyrightText: 2025 Greenbone AG
+//
+// SPDX-License-Identifier: GPL-2.0-or-later WITH x11vnc-openssl-exception
+
 use std::collections::{HashMap, HashSet};
 
 use tokio::sync::{Mutex, MutexGuard};
 
 use super::error::SshErrorKind;
-use super::{error::Result, SessionId, SshSession};
+use super::{SessionId, SshSession, error::Result};
 
 type BorrowedSession<'a> = MutexGuard<'a, SshSession>;
 

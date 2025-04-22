@@ -8,7 +8,7 @@ use std::io;
 
 use thiserror::Error;
 
-use crate::nasl::syntax::{token::Token, Statement};
+use crate::nasl::syntax::{Statement, token::Token};
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 /// A list specifying general categories of Syntax error.
@@ -46,7 +46,7 @@ pub enum ErrorKind {
 #[error("{kind}")]
 pub struct SyntaxError {
     /// A human readable reason why this error is returned
-    kind: ErrorKind,
+    pub kind: ErrorKind,
     pub(crate) line: u32,
     pub(crate) file: String,
 }
@@ -239,7 +239,7 @@ impl From<io::Error> for SyntaxError {
 
 #[cfg(test)]
 mod tests {
-    use crate::nasl::syntax::{parse, ErrorKind, TokenCategory};
+    use crate::nasl::syntax::{ErrorKind, TokenCategory, parse};
 
     fn test_for_missing_semicolon(code: &str) {
         let result = parse(code).next().unwrap();

@@ -6,15 +6,18 @@
 //!
 //! All known paths must be handled in the entrypoint function.
 
+use core::str;
 use std::{fmt::Display, marker::PhantomData, sync::Arc};
 
-use super::{context::Context, ClientIdentifier};
+use super::{ClientIdentifier, context::Context};
 
 use http::StatusCode;
 use hyper::{Method, Request};
+use regex::Regex;
 use scannerlib::models::scanner::{ScanDeleter, ScanResultFetcher, ScanStarter, ScanStopper};
-use scannerlib::models::{scanner::*, Action, Phase, Scan, ScanAction};
+use scannerlib::models::{Action, Phase, Scan, ScanAction, scanner::*};
 use scannerlib::notus::NotusError;
+use tokio::process::Command;
 
 use crate::{
     config,
@@ -24,6 +27,9 @@ use crate::{
     storage::{NVTStorer as _, ProgressGetter as _, ScanIDClientMapper as _, ScanStorer as _},
 };
 
+const PERFORMANCE_TITLES: &str = r"(cpu-.*)|(proc)|(mem)|(swap)|(load)|(df-.*)|(disk-sd[a-z][0-9]-rw)|(disk-sd[a-z][0-9]-load)|(disk-sd[a-z][0-9]-io-load)|(interface-eth.*-traffic)|(interface-eth.*-err-rate)|(interface-eth.*-err)|(sensors-.*_temperature-.*)|(sensors-.*_fanspeed-.*)|(sensors-.*_voltage-.*)|(titles)";
+const PERFORMANCE_TITLES_FORBIDDEN: &str = r"^[^|&;]+$";
+
 #[derive(PartialEq, Eq)]
 enum HealthOpts {
     /// Ready
@@ -32,6 +38,8 @@ enum HealthOpts {
     Started,
     /// Alive
     Alive,
+    /// Performance
+    Performance,
 }
 /// The supported paths of openvasd
 // TODO: change KnownPath to reflect query parameter
@@ -107,6 +115,7 @@ impl KnownPaths {
                 Some("ready") => KnownPaths::Health(HealthOpts::Ready),
                 Some("alive") => KnownPaths::Health(HealthOpts::Alive),
                 Some("started") => KnownPaths::Health(HealthOpts::Started),
+                Some("performance") => KnownPaths::Health(HealthOpts::Performance),
                 _ => KnownPaths::Unknown,
             },
             _ => {
@@ -142,6 +151,7 @@ impl Display for KnownPaths {
             KnownPaths::Health(HealthOpts::Alive) => write!(f, "/health/alive"),
             KnownPaths::Health(HealthOpts::Ready) => write!(f, "/health/ready"),
             KnownPaths::Health(HealthOpts::Started) => write!(f, "/health/started"),
+            KnownPaths::Health(HealthOpts::Performance) => write!(f, "/health/performance"),
             KnownPaths::ScanPreferences => write!(f, "/scans/preferences"),
         }
     }
@@ -195,37 +205,40 @@ where
             if req.method() == Method::HEAD && kp != KnownPaths::Scans(None) {
                 return Ok(ctx.response.empty(StatusCode::OK));
             }
+            if kp == KnownPaths::Health(HealthOpts::Performance) && !&ctx.enable_get_performance {
+                return Ok(ctx
+                    .response
+                    .not_found("entrypoint disable:", req.uri().path()));
+            }
             let cid: Option<ClientHash> = {
                 match &*cid {
-                    ClientIdentifier::Disabled => {
-                        if let Some(key) = ctx.api_key.as_ref() {
-                            match req.headers().get("x-api-key") {
-                                Some(v) if v == key => ctx.api_key.as_ref().map(|x| x.into()),
-                                Some(v) => {
-                                    tracing::debug!("{} {} invalid key: {:?}", req.method(), kp, v);
-                                    None
-                                }
-                                None => None,
+                    ClientIdentifier::Disabled => match ctx.api_key.as_ref() {
+                        Some(key) => match req.headers().get("x-api-key") {
+                            Some(v) if v == key => ctx.api_key.as_ref().map(|x| x.into()),
+                            Some(v) => {
+                                tracing::debug!("{} {} invalid key: {:?}", req.method(), kp, v);
+                                None
                             }
-                        } else {
-                            Some("disabled".into())
-                        }
-                    }
+                            None => None,
+                        },
+                        _ => Some("disabled".into()),
+                    },
                     ClientIdentifier::Known(cid) => Some(cid.clone()),
                     ClientIdentifier::Unknown => {
-                        if let Some(key) = ctx.api_key.as_ref() {
-                            match req.headers().get("x-api-key") {
+                        match ctx.api_key.as_ref() {
+                            Some(key) => match req.headers().get("x-api-key") {
                                 Some(v) if v == key => ctx.api_key.as_ref().map(|x| x.into()),
                                 Some(v) => {
                                     tracing::debug!("{} {} invalid key: {:?}", req.method(), kp, v);
                                     None
                                 }
                                 None => None,
+                            },
+                            _ => {
+                                // We don't allow no api key and no client certs when we have a server
+                                // certificate to prevent accidental misconfiguration.
+                                None
                             }
-                        } else {
-                            // We don't allow no api key and no client certs when we have a server
-                            // certificate to prevent accidental misconfiguration.
-                            None
                         }
                     }
                 }
@@ -267,10 +280,87 @@ where
                 }
                 (&Method::GET, Health(HealthOpts::Ready)) => {
                     let oids = ctx.scheduler.oids().await?;
-                    if oids.count() == 0 {
+                    if oids.is_empty() {
                         Ok(ctx.response.empty(StatusCode::SERVICE_UNAVAILABLE))
                     } else {
                         Ok(ctx.response.empty(StatusCode::OK))
+                    }
+                }
+                (&Method::GET, Health(HealthOpts::Performance)) => {
+                    let query = req.uri().query();
+                    if query.is_none() {
+                        return Ok(ctx.response.bad_request("Bogus GET performance format"));
+                    }
+
+                    let mut child = Command::new("gvmcg");
+                    let query_parts = query.unwrap().split("&");
+                    let mut t = "";
+                    let mut start = "";
+                    let mut end = "";
+
+                    let re_titles = Regex::new(PERFORMANCE_TITLES).unwrap();
+                    let re_forbidden = Regex::new(PERFORMANCE_TITLES_FORBIDDEN).unwrap();
+                    for p in query_parts {
+                        let keyval = p.split("=").collect::<Vec<&str>>();
+                        if keyval.len() < 2 {
+                            return Ok(ctx.response.bad_request("Bogus GET performance format"));
+                        }
+                        match keyval[0] {
+                            "start" => {
+                                start = match keyval[1].parse::<i64>() {
+                                    Ok(_) => keyval[1],
+                                    Err(_) => {
+                                        return Ok(ctx.response.bad_request(
+                                            "Bogus GET performance format. Invalid start value",
+                                        ));
+                                    }
+                                };
+                            }
+                            "end" => {
+                                end = match keyval[1].parse::<i64>() {
+                                    Ok(_) => keyval[1],
+                                    Err(_) => {
+                                        return Ok(ctx.response.bad_request(
+                                            "Bogus GET performance format. Invalid end value",
+                                        ));
+                                    }
+                                };
+                            }
+                            "titles" => {
+                                if re_titles.is_match(keyval[1]) && re_forbidden.is_match(keyval[1])
+                                {
+                                    t = keyval[1];
+                                } else {
+                                    return Ok(ctx.response.bad_request(
+                                        "Bogus GET performance format. Argument not allowed",
+                                    ));
+                                };
+                            }
+                            _ => {
+                                return Ok(ctx
+                                    .response
+                                    .bad_request("Bogus GET performance format"));
+                            }
+                        };
+                    }
+                    if !start.is_empty() {
+                        child.arg(start);
+                    }
+                    if !end.is_empty() {
+                        child.arg(end);
+                    }
+
+                    let child = child.arg(t).output();
+                    match child.await {
+                        Ok(output) if output.status.success() => {
+                            let text_base64 =
+                                vec![String::from_utf8_lossy(&output.stdout).replace('\n', "")];
+                            Ok(ctx.response.ok(&text_base64))
+                        }
+                        Ok(output) => Ok(ctx
+                            .response
+                            .bad_request(str::from_utf8(&output.stderr).unwrap())),
+                        Err(output) => Ok(ctx.response.internal_server_error(&output)),
                     }
                 }
                 (&Method::GET, Notus(None)) => match &ctx.notus {
@@ -449,14 +539,8 @@ where
                             Some(nvt) => Ok(ctx.response.ok(&nvt)),
                             None => Ok(ctx.response.not_found("nvt", &oid)),
                         },
-                        None if meta => Ok(ctx
-                            .response
-                            .ok_json_stream(ctx.scheduler.vts().await?)
-                            .await),
-                        None => Ok(ctx
-                            .response
-                            .ok_json_stream(ctx.scheduler.oids().await?)
-                            .await),
+                        None if meta => Ok(ctx.response.ok(&ctx.scheduler.vts().await?)),
+                        None => Ok(ctx.response.ok(&ctx.scheduler.oids().await?)),
                     }
                 }
                 _ => Ok(ctx.response.not_found("path", req.uri().path())),
@@ -469,12 +553,15 @@ where
 pub mod client {
     use std::sync::Arc;
 
+    use async_trait::async_trait;
     use http::StatusCode;
     use http_body_util::{BodyExt, Empty, Full};
     use hyper::{
-        body::Bytes, header::HeaderValue, service::HttpService, HeaderMap, Method, Request,
+        HeaderMap, Method, Request, body::Bytes, header::HeaderValue, service::HttpService,
     };
-    use scannerlib::models::scanner::{self, Scanner};
+    use scannerlib::models::scanner::{
+        self, Error, ScanDeleter, ScanResultFetcher, ScanResults, ScanStarter, ScanStopper, Scanner,
+    };
     use scannerlib::models::{self, Action, Scan, ScanAction, Status};
     use scannerlib::nasl::FSPluginLoader;
     use scannerlib::storage::infisto::{
@@ -483,12 +570,167 @@ pub mod client {
     use serde::Deserialize;
 
     use crate::storage::inmemory;
+    use crate::storage::results::ResultCatcher;
     use crate::{
         controller::{ClientIdentifier, Context},
-        storage::{file::Storage, NVTStorer, UserNASLStorageForKBandVT},
+        storage::{NVTStorer, file::Storage},
     };
 
     use super::KnownPaths;
+
+    type StartScan = Arc<Box<dyn Fn(Scan) -> Result<(), Error> + Send + Sync + 'static>>;
+    type CanStartScan = Arc<Box<dyn Fn(&Scan) -> bool + Send + Sync + 'static>>;
+    type StopScan = Arc<Box<dyn Fn(&str) -> Result<(), Error> + Send + Sync + 'static>>;
+    type DeleteScan = Arc<Box<dyn Fn(&str) -> Result<(), Error> + Send + Sync + 'static>>;
+    type FetchResults =
+        Arc<Box<dyn Fn(&str) -> Result<ScanResults, Error> + Send + Sync + 'static>>;
+
+    /// A fake implementation of the ScannerStack trait.
+    ///
+    /// This is useful for testing the Scanner implementation.
+    pub struct LambdaScannerBuilder {
+        start_scan: StartScan,
+        can_start_scan: CanStartScan,
+        stop_scan: StopScan,
+        delete_scan: DeleteScan,
+        fetch_results: FetchResults,
+    }
+
+    impl Default for LambdaScannerBuilder {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl LambdaScannerBuilder {
+        pub fn new() -> Self {
+            Self {
+                start_scan: Arc::new(Box::new(|_| Ok(()))),
+                can_start_scan: Arc::new(Box::new(|_| true)),
+                stop_scan: Arc::new(Box::new(|_| Ok(()))),
+                delete_scan: Arc::new(Box::new(|_| Ok(()))),
+                fetch_results: Arc::new(Box::new(|_| Ok(ScanResults::default()))),
+            }
+        }
+
+        pub fn with_start_scan<F>(mut self, f: F) -> Self
+        where
+            F: Fn(Scan) -> Result<(), Error> + Send + Sync + 'static,
+        {
+            self.start_scan = Arc::new(Box::new(f));
+            self
+        }
+
+        pub fn with_can_start_scan<F>(mut self, f: F) -> Self
+        where
+            F: Fn(&Scan) -> bool + Send + Sync + 'static,
+        {
+            self.can_start_scan = Arc::new(Box::new(f));
+            self
+        }
+
+        pub fn with_stop_scan<F>(mut self, f: F) -> Self
+        where
+            F: Fn(&str) -> Result<(), Error> + Send + Sync + 'static,
+        {
+            self.stop_scan = Arc::new(Box::new(f));
+            self
+        }
+
+        pub fn with_delete_scan<F>(mut self, f: F) -> Self
+        where
+            F: Fn(&str) -> Result<(), Error> + Send + Sync + 'static,
+        {
+            self.delete_scan = Arc::new(Box::new(f));
+            self
+        }
+
+        pub fn with_fetch_results<F>(mut self, f: F) -> Self
+        where
+            F: Fn(&str) -> Result<super::ScanResults, Error> + Send + Sync + 'static,
+        {
+            self.fetch_results = Arc::new(Box::new(f));
+            self
+        }
+
+        pub fn build(self) -> LambdaScanner {
+            LambdaScanner {
+                start_scan: self.start_scan,
+                can_start_scan: self.can_start_scan,
+                stop_scan: self.stop_scan,
+                delete_scan: self.delete_scan,
+                fetch_results: self.fetch_results,
+            }
+        }
+    }
+
+    pub struct LambdaScanner {
+        start_scan: StartScan,
+        can_start_scan: CanStartScan,
+        stop_scan: StopScan,
+        delete_scan: DeleteScan,
+        fetch_results: FetchResults,
+    }
+
+    #[async_trait]
+    impl ScanStarter for LambdaScanner {
+        async fn start_scan(&self, scan: Scan) -> Result<(), Error> {
+            let start_scan = self.start_scan.clone();
+            tokio::task::spawn_blocking(move || (start_scan)(scan))
+                .await
+                .unwrap()
+        }
+
+        async fn can_start_scan(&self, scan: &Scan) -> bool {
+            let can_start_scan = self.can_start_scan.clone();
+            let scan = scan.clone();
+            tokio::task::spawn_blocking(move || (can_start_scan)(&scan))
+                .await
+                .unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl ScanStopper for LambdaScanner {
+        async fn stop_scan<I>(&self, id: I) -> Result<(), Error>
+        where
+            I: AsRef<str> + Send + 'static,
+        {
+            let stop_scan = self.stop_scan.clone();
+            let id = id.as_ref().to_string();
+            tokio::task::spawn_blocking(move || (stop_scan)(&id))
+                .await
+                .unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl ScanDeleter for LambdaScanner {
+        async fn delete_scan<I>(&self, id: I) -> Result<(), Error>
+        where
+            I: AsRef<str> + Send + 'static,
+        {
+            let delete_scan = self.delete_scan.clone();
+            let id = id.as_ref().to_string();
+            tokio::task::spawn_blocking(move || (delete_scan)(&id))
+                .await
+                .unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl ScanResultFetcher for LambdaScanner {
+        async fn fetch_results<I>(&self, id: I) -> Result<super::ScanResults, Error>
+        where
+            I: AsRef<str> + Send + 'static,
+        {
+            let fetch_results = self.fetch_results.clone();
+            let id = id.as_ref().to_string();
+            tokio::task::spawn_blocking(move || (fetch_results)(&id))
+                .await
+                .unwrap()
+        }
+    }
 
     type HttpResult = Result<crate::response::Result, scanner::Error>;
     type TypeResult<T> = Result<T, scanner::Error>;
@@ -500,19 +742,15 @@ pub mod client {
 
     pub async fn in_memory_example_feed() -> Client<
         scannerlib::scanner::Scanner<(
-            Arc<
-                UserNASLStorageForKBandVT<
-                    crate::storage::inmemory::Storage<crate::crypt::ChaCha20Crypt>,
-                >,
-            >,
+            Arc<ResultCatcher<crate::storage::inmemory::Storage<crate::crypt::ChaCha20Crypt>>>,
             FSPluginLoader,
         )>,
-        Arc<UserNASLStorageForKBandVT<inmemory::Storage<crate::crypt::ChaCha20Crypt>>>,
+        Arc<ResultCatcher<inmemory::Storage<crate::crypt::ChaCha20Crypt>>>,
     > {
         use crate::file::tests::{example_feeds, nasl_root};
         let storage = crate::storage::inmemory::Storage::default();
 
-        let storage = Arc::new(UserNASLStorageForKBandVT::new(storage));
+        let storage = Arc::new(ResultCatcher::new(storage));
 
         storage
             .synchronize_feeds(example_feeds().await)
@@ -526,10 +764,10 @@ pub mod client {
         prefix: &str,
     ) -> Client<
         scannerlib::scanner::Scanner<(
-            Arc<UserNASLStorageForKBandVT<Storage<ChaCha20IndexFileStorer<IndexedFileStorer>>>>,
+            Arc<ResultCatcher<Storage<ChaCha20IndexFileStorer<IndexedFileStorer>>>>,
             FSPluginLoader,
         )>,
-        Arc<UserNASLStorageForKBandVT<Storage<ChaCha20IndexFileStorer<IndexedFileStorer>>>>,
+        Arc<ResultCatcher<Storage<ChaCha20IndexFileStorer<IndexedFileStorer>>>>,
     > {
         use crate::file::tests::{example_feeds, nasl_root};
         let storage_dir = format!("/tmp/openvasd/{prefix}_{}", uuid::Uuid::new_v4());
@@ -538,7 +776,7 @@ pub mod client {
         let feeds = example_feeds().await;
         let storage = crate::storage::file::encrypted(&storage_dir, key, feeds).unwrap();
 
-        let storage = Arc::new(UserNASLStorageForKBandVT::new(storage));
+        let storage = Arc::new(ResultCatcher::new(storage));
 
         storage
             .synchronize_feeds(example_feeds().await)
@@ -549,19 +787,18 @@ pub mod client {
         Client::authenticated(scanner, storage)
     }
 
-    pub async fn fails_to_fetch_results() -> Client<
-        scannerlib::scanner::fake::LambdaScanner,
-        Arc<UserNASLStorageForKBandVT<inmemory::Storage<crate::crypt::ChaCha20Crypt>>>,
-    > {
+    pub async fn fails_to_fetch_results()
+    -> Client<LambdaScanner, Arc<ResultCatcher<inmemory::Storage<crate::crypt::ChaCha20Crypt>>>>
+    {
         use crate::file::tests::example_feeds;
         let storage = crate::storage::inmemory::Storage::default();
-        let storage = Arc::new(UserNASLStorageForKBandVT::new(storage));
+        let storage = Arc::new(ResultCatcher::new(storage));
         storage
             .synchronize_feeds(example_feeds().await)
             .await
             .unwrap();
 
-        let scanner = scannerlib::scanner::fake::LambdaScannerBuilder::new()
+        let scanner = LambdaScannerBuilder::new()
             .with_fetch_results(|_| Err(scanner::Error::Unexpected("no results".to_string())))
             .build();
         Client::authenticated(scanner, storage)
@@ -571,19 +808,20 @@ pub mod client {
         prefix: &str,
     ) -> Client<
         scannerlib::scanner::Scanner<(
-            Arc<UserNASLStorageForKBandVT<Storage<CachedIndexFileStorer>>>,
+            Arc<ResultCatcher<Storage<CachedIndexFileStorer>>>,
             FSPluginLoader,
         )>,
-        Arc<UserNASLStorageForKBandVT<Storage<CachedIndexFileStorer>>>,
+        Arc<ResultCatcher<Storage<CachedIndexFileStorer>>>,
     > {
         use crate::file::tests::{example_feed_file_storage, nasl_root};
         let storage_dir = format!("/tmp/openvasd/{prefix}_{}", uuid::Uuid::new_v4());
         let store = example_feed_file_storage(&storage_dir).await;
-        let store = Arc::new(UserNASLStorageForKBandVT::new(store));
+        let store = Arc::new(ResultCatcher::new(store));
         let nasl_feed_path = nasl_root().await;
         let scanner = scannerlib::scanner::Scanner::with_storage(store.clone(), &nasl_feed_path);
         Client::authenticated(scanner, store)
     }
+
     impl<S, DB> Client<S, DB>
     where
         S: Scanner + 'static + std::marker::Send + std::marker::Sync,

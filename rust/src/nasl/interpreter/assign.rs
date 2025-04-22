@@ -4,9 +4,11 @@
 
 use std::collections::HashMap;
 
+use crate::nasl::interpreter::InterpretError;
 use crate::nasl::syntax::{AssignOrder, Statement, TokenCategory};
 
-use super::{error::InterpretError, interpreter::InterpretResult, Interpreter};
+use super::interpreter::InterpretResult;
+use super::interpreter::Interpreter;
 use crate::nasl::syntax::NaslValue;
 use crate::nasl::syntax::StatementKind::*;
 use crate::nasl::utils::ContextType;
@@ -39,15 +41,15 @@ fn prepare_dict(left: NaslValue) -> HashMap<String, NaslValue> {
     }
 }
 
-impl Interpreter<'_> {
+impl Interpreter<'_, '_> {
     fn save(&mut self, idx: usize, key: &str, value: NaslValue) {
-        self.register_mut()
+        self.register
             .add_to_index(idx, key, ContextType::Value(value));
     }
 
     fn named_value(&self, key: &str) -> Result<(usize, NaslValue), InterpretError> {
         match self
-            .register()
+            .register
             .index_named(key)
             .unwrap_or((0, &ContextType::Value(NaslValue::Null)))
         {
@@ -55,6 +57,7 @@ impl Interpreter<'_> {
             (idx, ContextType::Value(val)) => Ok((idx, val.clone())),
         }
     }
+
     #[allow(clippy::too_many_arguments)]
     fn handle_dict(
         &mut self,
@@ -171,7 +174,7 @@ impl Interpreter<'_> {
     }
 }
 
-impl<'a> Interpreter<'a> {
+impl Interpreter<'_, '_> {
     /// Assign a right value to a left value. Return either the
     /// previous or the new value, based on the order.
     pub async fn assign(
@@ -183,12 +186,12 @@ impl<'a> Interpreter<'a> {
     ) -> InterpretResult {
         let (key, lookup) = {
             match left.kind() {
-                Variable => (Self::identifier(left.as_token())?, None),
+                Variable => (left.as_token().identifier()?, None),
                 Array(Some(stmt)) => (
-                    Self::identifier(left.as_token())?,
+                    left.as_token().identifier()?,
                     Some(self.resolve(stmt).await?),
                 ),
-                Array(None) => (Self::identifier(left.as_token())?, None),
+                Array(None) => (left.as_token().identifier()?, None),
                 _ => return Err(InterpretError::unsupported(left, "Array or Variable")),
             }
         };
@@ -220,7 +223,7 @@ impl<'a> Interpreter<'a> {
                     // get rid of minus sign
                     let left = i64::from(left) as u32;
                     let right = i64::from(right) as u32;
-                    NaslValue::Number((left << right) as i64)
+                    NaslValue::Number((left >> right) as i64)
                 })
             }
             TokenCategory::PercentEqual => self.store_return(&key, lookup, &val, |left, right| {
@@ -253,12 +256,21 @@ mod tests {
         t.ok("a *= 2;", 22);
         t.ok("a >>= 2;", 5);
         t.ok("a <<= 2;", 20);
-        t.ok("a >>>= 2;", 80);
-        t.ok("a %= 2;", 0);
-        t.ok("a++;", 0);
-        t.ok("++a;", 2);
-        t.ok("a--;", 2);
-        t.ok("--a;", 0);
+        t.ok("a >>>= 2;", 5);
+        t.ok("a %= 2;", 1);
+        t.ok("a++;", 1);
+        t.ok("++a;", 3);
+        t.ok("a--;", 3);
+        t.ok("--a;", 1);
+    }
+
+    #[test]
+    fn unsigned_shift_operator() {
+        let mut t = TestBuilder::default();
+        t.ok("a = -5;", -5);
+        t.ok("a >>= 2;", -2);
+        t.ok("a = -5;", -5);
+        t.ok("a >>>= 2;", 1073741822);
     }
 
     #[test]

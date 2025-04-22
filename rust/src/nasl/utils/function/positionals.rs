@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Greenbone AG
+//
+// SPDX-License-Identifier: GPL-2.0-or-later WITH x11vnc-openssl-exception
+
 use std::{marker::PhantomData, ops::Index};
 
 use crate::nasl::{FnError, Register};
@@ -26,7 +30,7 @@ impl<'a, T: FromNaslValue<'a>> Positionals<'a, T> {
     /// Returns an iterator over the positional arguments.
     /// The item type is Result<T, FnError>, since
     /// the conversion to T can still fail.
-    pub fn iter(&self) -> impl Iterator<Item = Result<T, FnError>> + 'a {
+    pub fn iter(&self) -> impl Iterator<Item = Result<T, FnError>> + 'a + use<'a, T> {
         self.register
             .positional()
             .iter()
@@ -63,7 +67,7 @@ impl<'a, T: FromNaslValue<'a>> CheckedPositionals<T> {
 
     /// Returns an iterator over the references to the positional arguments
     /// in the target type `T`.
-    pub fn iter(&self) -> impl Iterator<Item = &T> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = &T> + '_ + use<'_, T> {
         self.data.iter()
     }
 

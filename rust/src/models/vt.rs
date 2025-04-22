@@ -5,7 +5,7 @@
 use super::parameter::Parameter;
 
 /// A VT to execute during a scan, including its parameters
-#[derive(Debug, Clone, PartialEq, Eq, Default, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, PartialOrd, Ord, Hash)]
 #[cfg_attr(
     feature = "serde_support",
     derive(serde::Serialize, serde::Deserialize)
@@ -16,4 +16,15 @@ pub struct VT {
     #[cfg_attr(feature = "serde_support", serde(default,))]
     /// The list of parameters for the VT
     pub parameters: Vec<Parameter>,
+}
+
+/// Describes the type of the feed
+#[derive(Clone, Debug, PartialEq, Eq, Copy, Hash)]
+pub enum FeedType {
+    /// Notus products
+    Products,
+    /// Notus advisories
+    Advisories,
+    /// NASL scripts
+    NASL,
 }

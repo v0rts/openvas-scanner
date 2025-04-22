@@ -22,12 +22,12 @@ use hex::encode;
 use sha2::{Digest, Sha256};
 
 use openpgp::{
+    Cert, KeyHandle,
+    parse::Parse,
     parse::stream::{
         DetachedVerifierBuilder, GoodChecksum, MessageLayer, MessageStructure, VerificationHelper,
     },
-    parse::Parse,
     policy::StandardPolicy,
-    Cert, KeyHandle,
 };
 use sequoia_ipc::keybox::{Keybox, KeyboxRecord};
 use sequoia_openpgp as openpgp;
@@ -39,7 +39,7 @@ pub enum Error {
     #[error("Incorrect feed.")]
     /// Corrupt sums file
     SumsFileCorrupt(Hasher),
-    #[error("Unable to load the file.")]
+    #[error("Unable to load file: {0}")]
     /// Unable to load the file
     LoadError(#[from] LoadError),
     #[error("Invalid hash for file with key '{key}'. Expected '{expected}', found '{actual}'.")]
@@ -55,7 +55,9 @@ pub enum Error {
     #[error("Bad signature: {0}")]
     /// Bad Signature
     BadSignature(String),
-    #[error("Signature check is enabled but there is no keyring. Set the GNUPGHOME environment variable")]
+    #[error(
+        "Signature check is enabled but there is no keyring. Set the GNUPGHOME environment variable"
+    )]
     /// Missing keyring
     MissingKeyring,
 }
@@ -164,7 +166,8 @@ where
     let helper = VHelper::new(gnupghome);
 
     let sign_path = path.as_ref().to_path_buf().join("sha256sums.asc");
-    let mut sig_file = File::open(sign_path).unwrap();
+    let mut sig_file = File::open(&sign_path)
+        .unwrap_or_else(|e| panic!("Could not find signature at {sign_path:?}. {e}"));
     let mut signature = Vec::new();
     let _ = sig_file.read_to_end(&mut signature);
 

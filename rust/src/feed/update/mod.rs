@@ -7,20 +7,27 @@ mod error;
 pub use error::Error;
 pub use error::ErrorKind;
 
-use futures::{stream, Stream, StreamExt};
+use futures::{Stream, StreamExt, stream};
 use std::fs::File;
 use tracing::trace;
 
-use crate::nasl::interpreter::{CodeInterpreter, Interpreter};
+use crate::nasl::ContextType;
+use crate::nasl::interpreter::ForkingInterpreter;
+use crate::nasl::interpreter::Interpreter;
 use crate::nasl::nasl_std_functions;
 use crate::nasl::prelude::*;
 use crate::nasl::syntax::AsBufReader;
+use crate::nasl::syntax::Lexer;
+use crate::nasl::syntax::Tokenizer;
+use crate::nasl::utils::Executor;
+use crate::nasl::utils::context::ContextStorage;
 use crate::nasl::utils::context::Target;
-use crate::nasl::ContextType;
-use crate::storage::{item::NVTField, ContextKey, Dispatcher, NoOpRetriever};
 
 use crate::feed::verify::check_signature;
 use crate::feed::verify::{HashSumFileItem, SignatureChecker};
+use crate::storage::ScanID;
+use crate::storage::items::nvt::FeedVersion;
+use crate::storage::items::nvt::FileName;
 
 use super::verify;
 
@@ -28,7 +35,7 @@ use super::verify;
 /// information
 pub struct Update<'a, S, L, V> {
     /// Is used to store data
-    dispatcher: &'a S,
+    storage: &'a S,
     /// Is used to load nasl plugins by a relative path
     loader: &'a L,
     /// Initial data, usually set in new.
@@ -37,26 +44,34 @@ pub struct Update<'a, S, L, V> {
     max_retry: usize,
     verifier: V,
     feed_version_set: bool,
+    executor: Executor,
 }
 
 /// Loads the plugin_feed_info and returns the feed version
 pub async fn feed_version(
     loader: &dyn Loader,
-    dispatcher: &dyn Dispatcher,
+    dispatcher: &dyn ContextStorage,
 ) -> Result<String, ErrorKind> {
     let feed_info_key = "plugin_feed_info.inc";
     let code = loader.load(feed_info_key)?;
     let register = Register::default();
-    let k = ContextKey::default();
-    let fr = NoOpRetriever::default();
-    let target = Target::default();
-    // TODO add parameter to struct
-    let functions = nasl_std_functions();
-    let context = Context::new(k, target, dispatcher, &fr, loader, &functions);
-    let mut interpreter = Interpreter::new(register, &context);
+    let scan_id = ScanID("".to_string());
+    let target = Target::localhost();
+    let filename = "";
+    let executor = nasl_std_functions();
+    let cb = ContextBuilder {
+        storage: dispatcher,
+        loader,
+        executor: &executor,
+        target,
+        filename,
+        scan_id,
+    };
+    let context = cb.build();
+    let mut interpreter = Interpreter::new(register, Lexer::new(Tokenizer::new(&code)), &context);
     for stmt in crate::nasl::syntax::parse(&code) {
         let stmt = stmt?;
-        interpreter.retry_resolve_next(&stmt, 3).await?;
+        interpreter.resolve(&stmt).await?;
     }
 
     let feed_version = interpreter
@@ -69,7 +84,7 @@ pub async fn feed_version(
 
 impl<'a, S, L, V> SignatureChecker for Update<'a, S, L, V>
 where
-    S: Sync + Send + Dispatcher,
+    S: Sync + Send + ContextStorage,
     L: Sync + Send + Loader + AsBufReader<File>,
     V: Iterator<Item = Result<HashSumFileItem<'a>, verify::Error>>,
 {
@@ -77,7 +92,7 @@ where
 
 impl<'a, S, L, V> Update<'a, S, L, V>
 where
-    S: Sync + Send + Dispatcher,
+    S: Sync + Send + ContextStorage,
     L: Sync + Send + Loader + AsBufReader<File>,
     V: Iterator<Item = Result<HashSumFileItem<'a>, verify::Error>> + 'a,
 {
@@ -103,15 +118,16 @@ where
             initial,
             max_retry,
             loader,
-            dispatcher: storage,
+            storage,
             verifier,
             feed_version_set: false,
+            executor: nasl_std_functions(),
         }
     }
 
     /// Loads the plugin_feed_info and returns the feed version
     pub async fn feed_version(&self) -> Result<String, ErrorKind> {
-        feed_version(self.loader, self.dispatcher).await
+        feed_version(self.loader, self.storage).await
     }
 
     /// Check if the current feed is outdated.
@@ -133,43 +149,38 @@ where
     /// to put into the corresponding dispatcher.
     async fn dispatch_feed_info(&self) -> Result<String, ErrorKind> {
         let feed_version = self.feed_version().await?;
-        self.dispatcher.retry_dispatch(
-            self.max_retry,
-            &Default::default(),
-            NVTField::Version(feed_version).into(),
-        )?;
+        self.storage
+            .retry_dispatch(FeedVersion, feed_version, self.max_retry)?;
+
         let feed_info_key = "plugin_feed_info.inc";
         Ok(feed_info_key.into())
     }
 
     /// Runs a single plugin in description mode.
-    async fn single(&self, key: &ContextKey) -> Result<i64, ErrorKind> {
-        let code = self.loader.load(&key.value())?;
-
+    async fn single(&self, key: &FileName) -> Result<i64, ErrorKind> {
+        let code = self.loader.load(&key.0)?;
         let register = Register::root_initial(&self.initial);
-        let fr = NoOpRetriever::default();
-        let target = Target::default();
-        let functions = nasl_std_functions();
-        let context = Context::new(
-            key.clone(),
+        let target = Target::localhost();
+        let context = ContextBuilder {
+            scan_id: ScanID(key.0.clone()),
             target,
-            self.dispatcher,
-            &fr,
-            self.loader,
-            &functions,
-        );
-        let mut results = Box::pin(CodeInterpreter::new(&code, register, &context).stream());
+            filename: &key.0,
+            storage: self.storage,
+            loader: self.loader,
+            executor: &self.executor,
+        };
+        let context = context.build();
+        let mut results = Box::pin(ForkingInterpreter::new(&code, register, &context).stream());
         while let Some(stmt) = results.next().await {
             match stmt {
                 Ok(NaslValue::Exit(i)) => {
-                    self.dispatcher.on_exit(context.key())?;
                     return Ok(i);
                 }
                 Ok(_) => {}
                 Err(e) => return Err(e.into()),
             }
         }
-        Err(ErrorKind::MissingExit(key.value()))
+        Err(ErrorKind::MissingExit(key.0.clone()))
     }
 
     /// Perform a signature check of the sha256sums file
@@ -210,13 +221,13 @@ where
                     // within nasl scripts usually don't entail them.
                     filename = filename[2..].to_string();
                 }
-                let k = ContextKey::FileName(filename.clone());
+                let k = FileName(filename.clone());
                 self.single(&k)
                     .await
-                    .map(|_| k.value())
+                    .map(|_| k.0.clone())
                     .map_err(|kind| Error {
                         kind,
-                        key: k.value(),
+                        key: k.0.clone(),
                     })
                     .into()
             }

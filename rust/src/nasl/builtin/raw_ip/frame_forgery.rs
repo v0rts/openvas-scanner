@@ -11,10 +11,8 @@ use std::{net::Ipv4Addr, str::FromStr};
 
 use pcap::{Capture, Device};
 
-use super::super::host::get_host_ip;
-
-use super::raw_ip_utils::{get_interface_by_local_ip, get_source_ip, ipstr2ipaddr};
 use super::RawIpError;
+use super::raw_ip_utils::{get_interface_by_local_ip, get_source_ip, ipstr2ipaddr};
 
 use tracing::info;
 
@@ -355,11 +353,11 @@ fn nasl_send_arp_request(register: &Register, context: &Context) -> Result<NaslV
             return Err(FnError::wrong_unnamed_argument(
                 "Integer",
                 "Invalid timeout value",
-            ))
+            ));
         }
     };
 
-    let target_ip = get_host_ip(context)?;
+    let target_ip = context.target().ip_addr();
 
     if target_ip.is_ipv6() {
         return Err(FnError::wrong_unnamed_argument(
@@ -367,7 +365,7 @@ fn nasl_send_arp_request(register: &Register, context: &Context) -> Result<NaslV
             "IPv6 does not support ARP protocol.",
         ));
     }
-    let local_ip = get_source_ip(target_ip, 50000u16)?;
+    let local_ip = get_source_ip(target_ip)?;
     let iface = get_interface_by_local_ip(local_ip)?;
     let local_mac_address = get_local_mac_address(&iface.name)?;
 
@@ -376,7 +374,7 @@ fn nasl_send_arp_request(register: &Register, context: &Context) -> Result<NaslV
         Err(_) => {
             return Err(FnError::missing_argument(
                 "Not possible to parse the src IP address.",
-            ))
+            ));
         }
     };
 
@@ -385,7 +383,7 @@ fn nasl_send_arp_request(register: &Register, context: &Context) -> Result<NaslV
         Err(_) => {
             return Err(FnError::missing_argument(
                 "Not possible to parse the dst IP address.",
-            ))
+            ));
         }
     };
 
@@ -473,7 +471,7 @@ fn nasl_send_frame(register: &Register, context: &Context) -> Result<NaslValue, 
             return Err(FnError::wrong_unnamed_argument(
                 "Boolean",
                 "Invalid pcap_active value",
-            ))
+            ));
         }
     };
 
@@ -484,7 +482,7 @@ fn nasl_send_frame(register: &Register, context: &Context) -> Result<NaslValue, 
             return Err(FnError::wrong_unnamed_argument(
                 "String",
                 "Invalid pcap_filter value",
-            ))
+            ));
         }
     };
 
@@ -495,13 +493,13 @@ fn nasl_send_frame(register: &Register, context: &Context) -> Result<NaslValue, 
             return Err(FnError::wrong_unnamed_argument(
                 "Integer",
                 "Invalid timeout value",
-            ))
+            ));
         }
     };
 
-    let target_ip = get_host_ip(context)?;
+    let target_ip = context.target().ip_addr();
 
-    let local_ip = get_source_ip(target_ip, 50000u16)?;
+    let local_ip = get_source_ip(target_ip)?;
     let iface = get_interface_by_local_ip(local_ip)?;
 
     // send the frame and get a response if pcap_active enabled

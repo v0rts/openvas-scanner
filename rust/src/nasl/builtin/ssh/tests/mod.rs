@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Greenbone AG
+//
+// SPDX-License-Identifier: GPL-2.0-or-later WITH x11vnc-openssl-exception
+
 mod server;
 
 use std::sync::Arc;
@@ -11,12 +15,12 @@ use server::AuthConfig;
 use server::TestServer;
 
 use crate::check_err_matches;
+use crate::nasl::NoOpLoader;
+use crate::nasl::builtin::ssh::SshError;
 use crate::nasl::builtin::ssh::error::SshErrorKind;
 use crate::nasl::builtin::ssh::sessions::MIN_SESSION_ID;
-use crate::nasl::builtin::ssh::SshError;
 use crate::nasl::test_prelude::*;
-use crate::nasl::NoOpLoader;
-use crate::storage::DefaultDispatcher;
+use crate::storage::inmemory::InMemoryStorage;
 
 use once_cell::sync::Lazy;
 
@@ -26,7 +30,7 @@ const PORT: u16 = 2223;
 
 fn default_config() -> ServerConfig {
     ServerConfig {
-        keys: vec![KeyPair::generate_ed25519().unwrap()],
+        keys: vec![KeyPair::generate_ed25519()],
         inactivity_timeout: Some(std::time::Duration::from_secs(3600)),
         auth_rejection_time: std::time::Duration::from_secs(3),
         auth_rejection_time_initial: Some(std::time::Duration::from_secs(0)),
@@ -35,7 +39,7 @@ fn default_config() -> ServerConfig {
 }
 
 async fn run_test(
-    f: impl Fn(&mut TestBuilder<NoOpLoader, DefaultDispatcher>) -> () + Send + Sync + 'static,
+    f: impl Fn(&mut TestBuilder<NoOpLoader, InMemoryStorage>) + Send + Sync + 'static,
     config: ServerConfig,
 ) {
     // Acquire the global lock to prevent multiple
@@ -58,7 +62,7 @@ async fn run_test(
 
 #[tokio::main]
 async fn run_client(
-    f: impl Fn(&mut TestBuilder<NoOpLoader, DefaultDispatcher>) -> () + Send + Sync + 'static,
+    f: impl Fn(&mut TestBuilder<NoOpLoader, InMemoryStorage>) + Send + Sync + 'static,
 ) {
     std::thread::sleep(Duration::from_millis(100));
     let mut t = TestBuilder::default();
@@ -77,7 +81,10 @@ async fn ssh_connect() {
     run_test(
         |t| {
             t.ok(
-                format!(r#"id = ssh_connect(port:{});"#, PORT),
+                format!(
+                    r#"id = ssh_connect(port:{}, keytype: "ssh-ed25519");"#,
+                    PORT
+                ),
                 MIN_SESSION_ID,
             );
             check_err_matches!(
@@ -113,9 +120,12 @@ fn userauth(t: &mut DefaultTestBuilder) {
 #[tokio::test]
 async fn ssh_userauth() {
     run_test(
-        |mut t| {
+        |t| {
             t.ok(
-                format!(r#"session_id = ssh_connect(port: {});"#, PORT),
+                format!(
+                    r#"session_id = ssh_connect(port: {}, keytype: "ssh-ed25519");"#,
+                    PORT
+                ),
                 MIN_SESSION_ID,
             );
             check_err_matches!(
@@ -126,7 +136,7 @@ async fn ssh_userauth() {
                     ..
                 },
             );
-            userauth(&mut t);
+            userauth(t);
         },
         default_config(),
     )
@@ -143,12 +153,12 @@ async fn ssh_userauth() {
 #[cfg_attr(feature = "nasl-builtin-libssh", ignore)]
 async fn ssh_request_exec() {
     run_test(
-        |mut t| {
+        |t| {
             t.ok(
-                format!(r#"session_id = ssh_connect(port: {});"#, PORT),
+                format!(r#"session_id = ssh_connect(port: {}, keytype: "ssh-ed25519");"#, PORT),
                 MIN_SESSION_ID,
             );
-            userauth(&mut t);
+            userauth(t);
             t.ok(
                 r#"auth = ssh_request_exec(session_id, stdout: 1, stderr: 0, cmd: "write_foo_stdout");"#,
                 "foo",

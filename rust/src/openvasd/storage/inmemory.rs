@@ -2,12 +2,12 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later WITH x11vnc-openssl-exception
 
-use std::{collections::HashSet, sync::RwLock};
+use std::sync::RwLock;
 
 use super::*;
 use scannerlib::{
     models, notus,
-    storage::{item::Nvt, ContextKey, DefaultDispatcher, StorageError},
+    storage::{Retriever, inmemory::OIDs, items::nvt::Feed},
 };
 use tokio::task::JoinSet;
 
@@ -28,7 +28,7 @@ pub struct Storage<E> {
     scans: Arc<RwLock<HashMap<String, Progress>>>,
     hash: Arc<RwLock<Vec<FeedHash>>>,
     client_id: Arc<RwLock<Vec<(ClientHash, String)>>>,
-    underlying: Arc<DefaultDispatcher>,
+    underlying: Arc<InMemoryStorage>,
     crypter: Arc<E>,
     feed_version: Arc<RwLock<String>>,
 }
@@ -43,7 +43,7 @@ where
             hash: RwLock::new(feeds).into(),
             client_id: RwLock::new(vec![]).into(),
             crypter: crypter.into(),
-            underlying: DefaultDispatcher::default().into(),
+            underlying: InMemoryStorage::default().into(),
             feed_version: Arc::new(RwLock::new(String::new())),
         }
     }
@@ -141,11 +141,12 @@ where
         let mut ids = self.client_id.write().unwrap();
         let ssid = scan_id.as_ref();
         let mut to_remove = vec![];
-        for (i, (_, sid)) in ids.iter().enumerate() {
+        for (i, (_, sid)) in ids.iter().enumerate().rev() {
             if sid == ssid {
                 to_remove.push(i);
             }
         }
+
         for i in to_remove {
             ids.remove(i);
         }
@@ -173,11 +174,14 @@ where
         tokio::task::spawn_blocking(move || {
             let mut scans = scans.write().unwrap();
             let id = sp.scan_id.clone();
-            if let Some(prgs) = scans.get_mut(&id) {
-                prgs.scan = sp;
-            } else {
-                let progress = Self::new_progress(crypter.as_ref(), sp)?;
-                scans.insert(id.clone(), progress);
+            match scans.get_mut(&id) {
+                Some(prgs) => {
+                    prgs.scan = sp;
+                }
+                _ => {
+                    let progress = Self::new_progress(crypter.as_ref(), sp)?;
+                    scans.insert(id.clone(), progress);
+                }
             }
             Ok(())
         })
@@ -353,20 +357,20 @@ where
         Ok(())
     }
 
-    async fn vts<'a>(&self) -> Result<Box<dyn Iterator<Item = Nvt> + Send + 'a>, Error> {
-        // TODO: change that setup to a channel based construct to get rid of collecting and
-        // cloning, see: response.rs#ok_bytestream. This would effectively change the response to a
-        // ByteStream enum. This should be fine as we usually just deliver results without
-        // analyzing them.
-        //
-        // For testing purposes I collect and filter for now. If you see that in production please
-        // create a github issue.
-        let vts = self
-            .underlying
-            .as_retriever()
-            .vts()?
-            .collect::<HashSet<_>>();
-        Ok(Box::new(vts.into_iter()))
+    async fn vt_by_oid(&self, oid: &str) -> Result<Option<Nvt>, Error> {
+        self.underlying
+            .retrieve(&scannerlib::storage::items::nvt::Oid(oid.to_string()))
+            .map_err(|e| e.into())
+    }
+
+    async fn vts<'a>(&self) -> Result<Vec<Nvt>, Error> {
+        let vts = self.underlying.retrieve(&Feed)?.unwrap_or_default();
+        Ok(vts)
+    }
+
+    async fn oids(&self) -> Result<Vec<String>, Error> {
+        let vts = self.underlying.retrieve(&OIDs)?.unwrap_or_default();
+        Ok(vts)
     }
 
     async fn feed_hash(&self) -> Vec<FeedHash> {
@@ -383,11 +387,11 @@ impl<C> super::ResultHandler for Storage<C>
 where
     C: crate::crypt::Crypt + Send + Sync + 'static,
 {
-    fn underlying_storage(&self) -> &Arc<DefaultDispatcher> {
+    fn underlying_storage(&self) -> &Arc<InMemoryStorage> {
         &self.underlying
     }
 
-    fn handle_result<E>(&self, key: &ContextKey, mut result: models::Result) -> Result<(), E>
+    fn handle_result<E>(&self, key: &str, mut result: models::Result) -> Result<(), E>
     where
         E: From<StorageError>,
     {
@@ -395,7 +399,7 @@ where
         use models::Phase;
         let mut scans = self.scans.write().unwrap();
         let progress = scans
-            .get_mut(key.as_ref())
+            .get_mut(key)
             .ok_or_else(|| StorageError::UnexpectedData(format!("Expected scan for {key}")))?;
         // Status fail safe when there is a bug
         match &progress.status.status {
@@ -411,22 +415,18 @@ where
         Ok(())
     }
 
-    fn remove_result<E>(
-        &self,
-        key: &ContextKey,
-        idx: Option<usize>,
-    ) -> Result<Vec<models::Result>, E>
+    fn remove_result<E>(&self, key: &str, idx: Option<usize>) -> Result<Vec<models::Result>, E>
     where
         E: From<StorageError>,
     {
         let result = self
-            .get_results_sync(key.as_ref(), idx, idx.map(|x| x + 1))
-            .map_err(|_| StorageError::NotFound(key.value()))?
+            .get_results_sync(key, idx, idx.map(|x| x + 1))
+            .map_err(|_| StorageError::NotFound(key.to_string()))?
             .filter_map(|b| serde_json::de::from_slice(&b).ok());
 
         let mut scans = self.scans.write().unwrap();
         let progress = scans
-            .get_mut(key.as_ref())
+            .get_mut(key)
             .ok_or_else(|| StorageError::UnexpectedData(format!("Expected scan for {key}")))?;
         if let Some(idx) = idx {
             if idx < progress.results.len() {
@@ -443,7 +443,7 @@ where
 #[cfg(test)]
 mod tests {
     use models::Scan;
-    use scannerlib::storage::ContextKey;
+    use scannerlib::models::{Credential, CredentialType};
 
     use super::*;
 
@@ -481,6 +481,18 @@ mod tests {
         );
     }
 
+    fn password(c: &Credential) -> &str {
+        match &c.credential_type {
+            CredentialType::UP { password, .. }
+            | CredentialType::SNMP { password, .. }
+            | CredentialType::KRB5 { password, .. } => password,
+            CredentialType::USK { password, .. } => match password {
+                Some(p) => p,
+                None => "",
+            },
+        }
+    }
+
     #[tokio::test]
     async fn store_delete_scan() {
         let storage = Storage::default();
@@ -499,7 +511,7 @@ mod tests {
         let pw = models::Credential {
             credential_type: models::CredentialType::UP {
                 username: "test".to_string(),
-                password: "test".to_string(),
+                password: "pass".to_string(),
                 privilege: None,
             },
             ..Default::default()
@@ -511,11 +523,11 @@ mod tests {
         storage.insert_scan(scan).await.unwrap();
         let (retrieved, _) = storage.get_scan(&id).await.unwrap();
         assert_eq!(retrieved.scan_id, id);
-        assert_ne!(retrieved.target.credentials[0].password(), "test");
+        assert_ne!(password(&retrieved.target.credentials[0]), "pass");
 
         let (retrieved, _) = storage.get_decrypted_scan(&id).await.unwrap();
         assert_eq!(retrieved.scan_id, id);
-        assert_eq!(retrieved.target.credentials[0].password(), "test");
+        assert_eq!(password(&retrieved.target.credentials[0]), "pass");
     }
 
     async fn store_scan(storage: &Storage<crypt::ChaCha20Crypt>) -> String {
@@ -563,7 +575,7 @@ mod tests {
             .unwrap()
             .collect();
         assert_eq!(results.len(), 5);
-        let ck = ContextKey::Scan(id.clone(), None);
+        let ck = id.clone();
         storage.remove_result::<Error>(&ck, Some(1)).unwrap();
         let results: Vec<_> = storage
             .get_results(&id, None, None)

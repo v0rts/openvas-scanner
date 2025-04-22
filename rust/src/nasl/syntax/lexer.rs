@@ -6,16 +6,17 @@
 use std::ops::Not;
 
 use super::{
+    AssignOrder, Statement, StatementKind,
     error::SyntaxError,
     operation::Operation,
     prefix_extension::Prefix,
     token::{Category, Token, Tokenizer},
-    AssignOrder, Statement, StatementKind,
 };
 
 use crate::{max_recursion, unexpected_statement, unexpected_token};
 
 /// Is used to parse Token to Statement
+#[derive(Clone)]
 pub struct Lexer<'a> {
     // TODO: change to iterator of Token instead of Tokenizer
     // to allopw statements of a Vec
@@ -562,7 +563,7 @@ mod infix {
 
 #[cfg(test)]
 mod postfix {
-    use super::super::{parse, token::Category, AssignOrder, Statement, StatementKind};
+    use super::super::{AssignOrder, Statement, StatementKind, parse, token::Category};
 
     use Category::*;
 

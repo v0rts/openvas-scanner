@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Greenbone AG
+//
+// SPDX-License-Identifier: GPL-2.0-or-later WITH x11vnc-openssl-exception
+
 use core::fmt;
 use std::{
     fmt::{Display, Formatter},
@@ -8,8 +12,8 @@ use std::{
 
 use pkcs8::der::Decode;
 use rustls::{
-    pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
     ClientConfig, ClientConnection, RootCertStore,
+    pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
 };
 
 pub enum TLSError {

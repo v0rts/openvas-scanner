@@ -2,14 +2,18 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later WITH x11vnc-openssl-exception
 
+pub mod alpm;
 pub mod deb;
 pub mod ebuild;
 pub mod rpm;
 pub mod slack;
 pub mod windows;
 
-use lazy_regex::{lazy_regex, Lazy, Regex};
-use std::cmp::{max, Ordering};
+use lazy_regex::{Lazy, Regex, lazy_regex};
+use std::{
+    cmp::{Ordering, max},
+    fmt::{Display, Formatter},
+};
 
 static RE: Lazy<Regex> = lazy_regex!(r"(\d+|.)");
 
@@ -35,6 +39,12 @@ static RE: Lazy<Regex> = lazy_regex!(r"(\d+|.)");
 /// repeated until a difference is found or both strings are exhausted.
 #[derive(PartialEq, Debug, Clone)]
 pub struct PackageVersion(pub String);
+
+impl Display for PackageVersion {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 impl PartialOrd for PackageVersion {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -144,6 +154,12 @@ impl PartialOrd for PackageVersion {
             }
         }
         None
+    }
+}
+
+impl From<&str> for PackageVersion {
+    fn from(version: &str) -> Self {
+        PackageVersion(version.to_string())
     }
 }
 

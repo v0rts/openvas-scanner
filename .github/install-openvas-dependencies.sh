@@ -25,7 +25,7 @@ apt-get update && apt-get install --no-install-recommends --no-install-suggests 
     libbsd-dev \
     libgnutls30 \
     libgssapi3-heimdal \
-    libkrb5-dev \
+    krb5-multidev \
     libasn1-8-heimdal \
     libroken19-heimdal \
     libhdb9-heimdal \
@@ -35,7 +35,7 @@ apt-get update && apt-get install --no-install-recommends --no-install-suggests 
     libhiredis-dev \
     && rm -rf /var/lib/apt/lists/*
 
-curl -L -o cgreen.tar.gz https://github.com/cgreen-devs/cgreen/archive/refs/tags/1.6.2.tar.gz -k
-tar -xzf cgreen.tar.gz && cd cgreen-1.6.2
+curl -L -o cgreen.tar.gz https://github.com/cgreen-devs/cgreen/archive/refs/tags/1.6.3.tar.gz -k
+tar -xzf cgreen.tar.gz && cd cgreen-1.6.3
 make install
 ldconfig

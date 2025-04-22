@@ -1,9 +1,13 @@
+// SPDX-FileCopyrightText: 2025 Greenbone AG
+//
+// SPDX-License-Identifier: GPL-2.0-or-later WITH x11vnc-openssl-exception
+
 use thiserror::Error;
 
 use crate::nasl::syntax::{LoadError, Statement};
 
-use super::verify;
 use super::Replace;
+use super::verify;
 
 #[derive(Debug, Clone, PartialEq, Error)]
 /// Error during transpiling
