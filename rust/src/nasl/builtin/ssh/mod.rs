@@ -141,7 +141,7 @@ impl Ssh {
     #[nasl_function(named(socket, port, keytype, csciphers, scciphers, timeout))]
     pub async fn nasl_ssh_connect(
         &mut self,
-        ctx: &Context<'_>,
+        ctx: &ScanCtx<'_>,
         socket: Option<Socket>,
         port: Option<u16>,
         keytype: Option<CommaSeparated<key::Name>>,
@@ -419,11 +419,10 @@ impl Ssh {
         let channel = session.get_channel().await?;
         channel.ensure_open()?;
 
-        let result = match channel.stdin().write_all(cmd.0.as_bytes()) {
+        match channel.stdin().write_all(cmd.0.as_bytes()) {
             Ok(_) => Ok(0),
             Err(_) => Ok(-1),
-        };
-        result
+        }
     }
 
     /// Close an ssh shell.
@@ -522,8 +521,7 @@ impl Ssh {
                 AuthStatus::Success => break,
                 status => {
                     return Err(SshErrorKind::UnexpectedAuthenticationStatus(format!(
-                        "{:?}",
-                        status
+                        "{status:?}"
                     ))
                     .with(session_id)
                     .with(ReturnValue(-1)));

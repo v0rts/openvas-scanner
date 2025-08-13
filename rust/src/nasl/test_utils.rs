@@ -10,19 +10,22 @@ use std::{
     path::PathBuf,
 };
 
-use crate::nasl::{
-    prelude::*,
-    syntax::{Loader, NoOpLoader},
-};
 use crate::storage::{ScanID, inmemory::InMemoryStorage};
+use crate::{
+    nasl::{
+        prelude::*,
+        syntax::{Loader, NoOpLoader},
+    },
+    scanner::preferences::preference::ScanPrefs,
+};
 use futures::{Stream, StreamExt};
 
 use super::{
-    interpreter::{ForkingInterpreter, InterpretError, InterpretErrorKind},
+    interpreter::{ForkingInterpreter, InterpreterError, InterpreterErrorKind},
     nasl_std_functions,
     utils::{
-        Executor,
-        context::{ContextStorage, Target},
+        Executor, ScanCtx,
+        scan_ctx::{ContextStorage, Ports, Target},
     },
 };
 
@@ -277,8 +280,8 @@ where
     }
 
     /// Runs the given lines of code and returns the list of results
-    /// along with the `Context` used for evaluating them.
-    pub fn results_and_context(&self) -> (Vec<NaslResult>, Context) {
+    /// along with the `ScanCtx` used for evaluating them.
+    pub fn results_and_context(&self) -> (Vec<NaslResult>, ScanCtx) {
         futures::executor::block_on(async {
             let context = self.context();
             (
@@ -303,21 +306,18 @@ where
         self.lines.join("\n")
     }
 
-    fn interpreter<'code, 'ctx>(
-        &self,
-        code: &'code str,
-        context: &'ctx Context,
-    ) -> ForkingInterpreter<'code, 'ctx> {
+    fn interpreter<'ctx>(&self, code: &str, context: &'ctx ScanCtx) -> ForkingInterpreter<'ctx> {
         let variables: Vec<_> = self
             .variables
             .iter()
-            .map(|(k, v)| (k.clone(), ContextType::Value(v.clone())))
+            .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let register = Register::root_initial(&variables);
-        ForkingInterpreter::new(code, register, context)
+        let register = Register::from_global_variables(&variables);
+        let ast = Code::from_string(code).parse().emit_errors().unwrap();
+        ForkingInterpreter::new(ast, register, context)
     }
 
-    pub fn interpreter_results(&self) -> Vec<Result<NaslValue, InterpretError>> {
+    pub fn interpreter_results(&self) -> Vec<Result<NaslValue, InterpreterError>> {
         let code = self.code();
         let context = self.context();
         let interpreter = self.interpreter(&code, &context);
@@ -327,29 +327,34 @@ where
     pub fn results_stream<'a>(
         &'a self,
         code: &'a str,
-        context: &'a Context,
+        context: &'a ScanCtx,
     ) -> impl Stream<Item = NaslResult> + 'a {
         let interpreter = self.interpreter(code, context);
         interpreter.stream().map(|res| {
             res.map_err(|e| match e.kind {
-                InterpretErrorKind::FunctionCallError(f) => f.kind,
-                e => panic!("Unknown error: {}", e),
+                InterpreterErrorKind::FunctionCallError(f) => f.kind,
+                e => panic!("Unknown error: {e}"),
             })
         })
     }
 
-    fn context(&self) -> Context {
+    fn context(&self) -> ScanCtx {
         let target = Target::do_not_resolve_hostname(&self.target);
-        let context = ContextBuilder {
+        ScanCtxBuilder {
             storage: &self.storage,
             loader: &self.loader,
             executor: &self.executor,
             scan_id: self.scan_id.clone(),
             target,
+            ports: Ports {
+                tcp: Default::default(),
+                udp: Default::default(),
+            },
             filename: self.filename.clone(),
+            scan_preferences: ScanPrefs::new(),
+            alive_test_methods: Vec::default(),
         }
-        .build();
-        context
+        .build()
     }
 
     /// Check that no errors were returned by any
@@ -357,7 +362,7 @@ where
     pub fn check_no_errors(&self) {
         for result in self.results() {
             if result.is_err() {
-                panic!("Expected no errors, found {:?}", result);
+                panic!("Expected no errors, found {result:?}");
             }
         }
     }
@@ -392,7 +397,7 @@ where
             Err(err) => {
                 // Drop first so we don't call the destructor, which would panic.
                 std::mem::forget(self);
-                panic!("{}", err)
+                panic!("{err}")
             }
             _ => std::mem::forget(self),
         }
@@ -468,7 +473,7 @@ impl<L: Loader, S: ContextStorage> Drop for TestBuilder<L, S> {
         if tokio::runtime::Handle::try_current().is_ok() {
             panic!("To use TestBuilder in an asynchronous context, explicitly call async_verify()");
         } else if let Err(err) = futures::executor::block_on(self.verify()) {
-            panic!("{}", err)
+            panic!("{err}")
         }
     }
 }

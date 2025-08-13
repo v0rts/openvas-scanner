@@ -29,19 +29,18 @@ impl Reporting {
         &self,
         typus: ResultType,
         register: &Register,
-        context: &Context,
+        context: &ScanCtx,
     ) -> Result<NaslValue, FnError> {
-        let data = register.named("data").map(|x| x.to_string());
+        let data = register.nasl_value("data").ok().map(|x| x.to_string());
         let port = register
-            .named("port")
-            .and_then(|x| match x {
-                ContextType::Value(x) => Some(x.into()),
-                _ => None,
-            })
+            .nasl_value("port")
+            .ok()
+            .map(|x| x.convert_to_number())
             .map(|x: i64| x as i16);
 
         let protocol = match register
-            .named("proto")
+            .nasl_value("proto")
+            .ok()
             .map(|x| x.to_string())
             .as_ref()
             .map(|x| x as &str)
@@ -77,7 +76,7 @@ impl Reporting {
     /// - proto is the protocol ("tcp" by default; "udp" is the other value).
     /// - uri specifies the location of a found product
     #[nasl_function]
-    fn log_message(&self, register: &Register, context: &Context) -> Result<NaslValue, FnError> {
+    fn log_message(&self, register: &Register, context: &ScanCtx) -> Result<NaslValue, FnError> {
         self.store_result(ResultType::Log, register, context)
     }
 
@@ -92,7 +91,7 @@ impl Reporting {
     fn security_message(
         &self,
         register: &Register,
-        context: &Context,
+        context: &ScanCtx,
     ) -> Result<NaslValue, FnError> {
         self.store_result(ResultType::Alarm, register, context)
     }
@@ -105,7 +104,7 @@ impl Reporting {
     /// - proto is the protocol ("tcp" by default; "udp" is the other value).
     /// - uri specifies the location of a found product
     #[nasl_function]
-    fn error_message(&self, register: &Register, context: &Context) -> Result<NaslValue, FnError> {
+    fn error_message(&self, register: &Register, context: &ScanCtx) -> Result<NaslValue, FnError> {
         self.store_result(ResultType::Error, register, context)
     }
 }

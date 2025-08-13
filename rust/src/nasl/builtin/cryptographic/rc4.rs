@@ -58,8 +58,8 @@ impl CipherHandlers {
     /// Closes a stream cipher.
     #[nasl_function]
     pub fn close_stream_cipher(&self, register: &Register) -> Result<NaslValue, FnError> {
-        let hd = match register.named("hd") {
-            Some(ContextType::Value(NaslValue::Number(x))) => *x as i32,
+        let hd = match register.nasl_value("hd") {
+            Ok(NaslValue::Number(x)) => *x as i32,
             _ => return Err(CryptographicError::Rc4("Handler ID not found".to_string()).into()),
         };
 
@@ -69,7 +69,7 @@ impl CipherHandlers {
                 handlers.remove(i);
                 Ok(NaslValue::Number(0))
             }
-            _ => Err(CryptographicError::Rc4(format!("Handler ID {} not found", hd)).into()),
+            _ => Err(CryptographicError::Rc4(format!("Handler ID {hd} not found")).into()),
         }
     }
 
@@ -116,8 +116,8 @@ impl CipherHandlers {
             _ => return Err(CryptographicError::Rc4("Missing data argument".to_string()).into()),
         };
 
-        let hd = match register.named("hd") {
-            Some(ContextType::Value(NaslValue::Number(x))) => *x as i32,
+        let hd = match register.nasl_value("hd") {
+            Ok(NaslValue::Number(x)) => *x as i32,
             _ => 0,
         };
 

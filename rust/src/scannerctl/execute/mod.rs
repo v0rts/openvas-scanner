@@ -12,6 +12,7 @@ use futures::StreamExt;
 use scannerlib::feed::{HashSumNameLoader, Update};
 use scannerlib::models;
 use scannerlib::nasl::{FSPluginLoader, nasl_std_functions};
+use scannerlib::scanner::preferences::preference::ScanPrefs;
 use scannerlib::scanner::{Scan, ScanRunner};
 use scannerlib::scheduling::{ExecutionPlaner, WaveExecutionPlan};
 use scannerlib::storage::inmemory::InMemoryStorage;
@@ -41,6 +42,19 @@ struct ScriptArgs {
     /// Target to scan.
     #[clap(short, long)]
     target: Option<String>,
+    /// KB key value.
+    #[clap(short, long = "kb")]
+    kb: Vec<String>,
+    /// TCP Ports to scan.
+    #[clap(short, long = "port")]
+    ports: Vec<u16>,
+    /// UDP Ports to scan.
+    #[clap(short, long = "udp-port")]
+    udp_ports: Vec<u16>,
+    #[clap(long = "timeout")]
+    timeout: Option<u32>,
+    #[clap(long = "vendor")]
+    vendor_version: Option<String>,
 }
 
 #[derive(clap::Parser)]
@@ -126,11 +140,18 @@ async fn scan(args: ScanArgs) -> Result<(), CliError> {
 }
 
 async fn script(args: ScriptArgs) -> Result<(), CliError> {
+    let scan_preferences = ScanPrefs::new()
+        .set_default_recv_timeout(args.timeout)
+        .set_vendor_version(args.vendor_version);
     interpret::run(
         &Db::InMemory,
         args.feed_path,
         &args.script,
         args.target.clone(),
+        args.kb.clone(),
+        args.ports.clone(),
+        args.udp_ports.clone(),
+        scan_preferences,
     )
     .await
 }

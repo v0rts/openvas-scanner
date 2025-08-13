@@ -3,6 +3,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later WITH x11vnc-openssl-exception
 
 #![doc = include_str!("README.md")]
+// We allow this fow now, since it would require lots of changes
+// but should eventually solve this.
+#![allow(clippy::result_large_err)]
 
 use std::marker::{Send, Sync};
 
@@ -13,11 +16,11 @@ use scannerlib::models::scanner::{
     ScanDeleter, ScanResultFetcher, ScanStarter, ScanStopper, Scanner,
 };
 use scannerlib::nasl::FSPluginLoader;
-use scannerlib::nasl::utils::context::ContextStorage;
+use scannerlib::nasl::utils::scan_ctx::ContextStorage;
 use scannerlib::notus::{HashsumProductLoader, Notus};
 use scannerlib::openvas::{self, cmd};
 use scannerlib::osp;
-use scannerlib::scanner::ScannerStackWithStorage;
+use scannerlib::scanner::{ScannerStackWithStorage, preferences};
 use scannerlib::scheduling::SchedulerStorage;
 use scannerlib::storage::infisto::{ChaCha20IndexFileStorer, IndexedFileStorer};
 use storage::results::ResultCatcher;
@@ -36,7 +39,6 @@ pub mod controller;
 pub mod crypt;
 pub mod feed;
 pub mod notus;
-pub mod preference;
 pub mod request;
 pub mod response;
 mod scheduling;
@@ -94,7 +96,7 @@ fn make_openvas_scanner(mut config: Config) -> openvas::Scanner {
         None,
         cmd::check_sudo(),
         redis_url,
-        crate::preference::PREFERENCES.to_vec(),
+        preferences::preference::PREFERENCES.to_vec(),
     )
 }
 
@@ -140,6 +142,7 @@ where
         .enable_get_performance(config.endpoints.enable_get_performance)
         .enable_get_scans(config.endpoints.enable_get_scans)
         .storage(db)
+        .scan_preferences(config.scanner.preferences.clone())
         .build()
 }
 

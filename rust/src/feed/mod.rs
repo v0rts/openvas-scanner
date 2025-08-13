@@ -4,7 +4,6 @@
 
 #![doc = include_str!("README.md")]
 mod oid;
-mod transpile;
 mod update;
 mod verify;
 
@@ -17,12 +16,10 @@ pub use update::ErrorKind as UpdateErrorKind;
 pub use update::Update;
 pub use update::feed_version as version;
 pub use verify::Error as VerifyError;
+pub use verify::FakeVerifier;
 pub use verify::FileNameLoader;
 pub use verify::HashSumNameLoader;
 pub use verify::Hasher;
 pub use verify::NaslFileFinder;
 pub use verify::SignatureChecker;
 pub use verify::check_signature;
-
-pub use transpile::FeedReplacer;
-pub use transpile::ReplaceCommand;

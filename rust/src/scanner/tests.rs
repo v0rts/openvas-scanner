@@ -1,15 +1,17 @@
 use super::Scan;
+use super::preferences::preference::ScanPrefs;
 use crate::models::Phase;
 use crate::models::Protocol;
 use crate::models::VT;
 use crate::models::scanner::{ScanResultFetcher, ScanResults};
-use crate::nasl::ContextBuilder;
+use crate::nasl::Code;
+use crate::nasl::ScanCtxBuilder;
 use crate::nasl::interpreter::ForkingInterpreter;
+use crate::nasl::interpreter::Register;
 use crate::nasl::nasl_std_functions;
-use crate::nasl::syntax::NaslValue;
+use crate::nasl::prelude::NaslValue;
 use crate::nasl::utils::Executor;
-use crate::nasl::utils::Register;
-use crate::nasl::utils::context::Target;
+use crate::nasl::utils::scan_ctx::Target;
 use crate::scanner::Scanner;
 use crate::scanner::{
     error::{ExecuteError, ScriptResult},
@@ -45,6 +47,7 @@ pub fn setup(scripts: &[(String, Nvt)]) -> (TestStack, Executor, Scan) {
     let scan = Scan {
         scan_id: "sid".to_string(),
         targets: vec![Target::do_not_resolve_hostname("test.host")],
+        ports: Default::default(),
         vts: scripts
             .iter()
             .map(|(_, v)| VT {
@@ -52,6 +55,9 @@ pub fn setup(scripts: &[(String, Nvt)]) -> (TestStack, Executor, Scan) {
                 parameters: vec![],
             })
             .collect(),
+        scan_preferences: ScanPrefs::new(),
+        alive_test_methods: Vec::new(),
+        alive_test_ports: Vec::new(),
     };
     let executor = nasl_std_functions();
     ((Arc::new(storage), loader), executor, scan)
@@ -212,22 +218,31 @@ fn parse_meta_data(filename: &str, code: &str) -> Option<Nvt> {
     ];
     let storage = Arc::new(InMemoryStorage::new());
 
-    let register = Register::root_initial(&initial);
+    let register = Register::from_global_variables(&initial);
     let target = Target::localhost();
+    let ports = Default::default();
     let executor = nasl_std_functions();
     let loader = |_: &str| code.to_string();
     let scan_id = ScanID(filename.to_string());
-
-    let cb = ContextBuilder {
+    let scan_preferences = ScanPrefs::new();
+    let alive_test_methods = Vec::default();
+    let cb = ScanCtxBuilder {
         storage: &storage,
         loader: &loader,
         executor: &executor,
         scan_id,
         target,
+        ports,
         filename,
+        scan_preferences,
+        alive_test_methods,
     };
     let context = cb.build();
-    let interpreter = ForkingInterpreter::new(code, register, &context);
+    let ast = Code::from_string(code)
+        .parse_description_block()
+        .emit_errors()
+        .unwrap();
+    let interpreter = ForkingInterpreter::new(ast, register, &context);
     for stmt in interpreter.iter_blocking() {
         if let NaslValue::Exit(_) = stmt.expect("stmt success") {
             break;
@@ -259,6 +274,7 @@ async fn run(
     let scan = Scan {
         scan_id: "sid".to_string(),
         targets: vec![Target::do_not_resolve_hostname("test.host")],
+        ports: Default::default(),
         vts: scripts
             .iter()
             .map(|(_, v)| VT {
@@ -266,6 +282,9 @@ async fn run(
                 parameters: vec![],
             })
             .collect(),
+        scan_preferences: ScanPrefs::new(),
+        alive_test_methods: Vec::new(),
+        alive_test_ports: Vec::new(),
     };
 
     let executor = nasl_std_functions();

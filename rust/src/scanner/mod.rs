@@ -16,6 +16,7 @@
 //! VT is then run to completion using the `VTRunner`.
 
 mod error;
+pub mod preferences;
 mod running_scan;
 mod scan;
 mod scan_runner;
@@ -42,7 +43,7 @@ use crate::models::scanner::{
 use crate::nasl::nasl_std_functions;
 use crate::nasl::syntax::{FSPluginLoader, Loader};
 use crate::nasl::utils::Executor;
-use crate::nasl::utils::context::ContextStorage;
+use crate::nasl::utils::scan_ctx::ContextStorage;
 use crate::scheduling::SchedulerStorage;
 use crate::scheduling::WaveExecutionPlan;
 use crate::storage::Remover;

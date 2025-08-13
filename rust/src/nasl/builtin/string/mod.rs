@@ -39,7 +39,7 @@ pub fn decode_hex(s: &str) -> Result<Vec<u8>, ParseIntError> {
 pub fn encode_hex(bytes: &[u8]) -> String {
     bytes
         .iter()
-        .map(|b| format!("{:02x}", b))
+        .map(|b| format!("{b:02x}"))
         .collect::<Vec<_>>()
         .join("")
 }
@@ -82,38 +82,6 @@ fn raw_string(positional: CheckedPositionals<&NaslValue>) -> Vec<u8> {
     data
 }
 
-fn write_nasl_string(s: &mut String, value: &NaslValue) -> Result<(), StringError> {
-    match value {
-        NaslValue::String(x) => write!(s, "{x}"),
-        NaslValue::Data(x) => {
-            let x = x.iter().map(|x| *x as char).collect::<String>();
-            write!(s, "{x}")
-        }
-        NaslValue::Number(x) => {
-            let c = *x as u8 as char;
-            if c.is_ascii_graphic() {
-                write!(s, "{c}")
-            } else {
-                write!(s, ".")
-            }
-        }
-        NaslValue::Array(x) => {
-            for p in x {
-                write_nasl_string(s, p)?;
-            }
-            Ok(())
-        }
-        NaslValue::Dict(x) => {
-            for p in x.values() {
-                write_nasl_string(s, p)?;
-            }
-            Ok(())
-        }
-        _ => write!(s, "."),
-    }
-    .map_err(|e| e.into())
-}
-
 /// NASL function to parse values into string representations
 #[nasl_function]
 fn string(positional: CheckedPositionals<&NaslValue>) -> Result<NaslValue, BuiltinError> {
@@ -133,24 +101,29 @@ fn combine_positionals_to_string(
 fn write_nasl_string_value(s: &mut String, value: &NaslValue) -> Result<(), StringError> {
     match value {
         NaslValue::Array(x) => {
-            for p in x {
-                write_nasl_string(s, p)?;
+            write!(s, "[")?;
+            for (i, p) in x.iter().enumerate() {
+                write_nasl_string_value(s, p)?;
+                if i + 1 != x.len() {
+                    write!(s, ", ")?;
+                }
             }
+            write!(s, "]")?;
             Ok(())
         }
         NaslValue::Dict(x) => {
             for p in x.values() {
-                write_nasl_string(s, p)?;
+                write_nasl_string_value(s, p)?;
             }
             Ok(())
         }
-        NaslValue::String(x) => write!(s, "{}", x),
-        NaslValue::Number(x) => write!(s, "{}", x),
+        NaslValue::String(x) => write!(s, "{x}"),
+        NaslValue::Number(x) => write!(s, "{x}"),
         NaslValue::Boolean(x) => write!(s, "{}", *x as i32),
         NaslValue::AttackCategory(x) => write!(s, "{}", *x as i32),
         NaslValue::Data(x) => {
             let x = x.iter().map(|x| *x as char).collect::<String>();
-            write!(s, "{}", x)
+            write!(s, "{x}")
         }
         _ => Ok(()),
     }
@@ -238,8 +211,7 @@ fn hexstr_to_data(s: NaslValue) -> Result<Vec<u8>, ArgumentError> {
     let s = s.as_str();
     decode_hex(s).map_err(|_| {
         ArgumentError::WrongArgument(format!(
-            "Expected an even-length string containing only 0-9a-fA-F, found '{}'",
-            s
+            "Expected an even-length string containing only 0-9a-fA-F, found '{s}'"
         ))
     })
 }
@@ -355,8 +327,7 @@ fn insstr(
     let end = end.unwrap_or(s.len()).min(s.len());
     if start > end {
         return Err(ArgumentError::WrongArgument(format!(
-            "start index ({}) larger than end ({}).",
-            start, end
+            "start index ({start}) larger than end ({end})."
         )));
     }
 
@@ -389,8 +360,7 @@ fn match_(string: NaslValue, pattern: NaslValue, icase: Option<bool>) -> Result<
     Ok(Pattern::new(pattern)
         .map_err(|err| {
             ArgumentError::WrongArgument(format!(
-                "Argument 'pattern' to 'match' is not a valid pattern: {}. {}",
-                pattern, err
+                "Argument 'pattern' to 'match' is not a valid pattern: {pattern}. {err}"
             ))
         })?
         .matches_with(string, options))

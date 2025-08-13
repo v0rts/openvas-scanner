@@ -2,13 +2,12 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later WITH x11vnc-openssl-exception
 
-use crate::nasl::interpreter::ForkingInterpreter;
 use std::path::PathBuf;
 
-use crate::models::{Parameter, Protocol, ScanID};
-use crate::nasl::syntax::{Loader, NaslValue};
-use crate::nasl::utils::context::{ContextStorage, Target};
+use crate::models::{AliveTestMethods, Parameter, Protocol, ScanID};
+use crate::nasl::interpreter::{ForkingInterpreter, InterpreterError};
 use crate::nasl::utils::lookup_keys::SCRIPT_PARAMS;
+use crate::nasl::utils::scan_ctx::{ContextStorage, Ports, Target};
 use crate::nasl::utils::{Executor, Register};
 use crate::scheduling::Stage;
 use crate::storage::Retriever;
@@ -21,6 +20,7 @@ use tracing::{error_span, trace, warn};
 use crate::nasl::prelude::*;
 
 use super::ExecuteError;
+use super::preferences::preference::ScanPrefs;
 use super::{
     ScannerStack,
     error::{ScriptResult, ScriptResultKind},
@@ -33,10 +33,13 @@ pub struct VTRunner<'a, S: ScannerStack> {
     executor: &'a Executor,
 
     target: &'a Target,
+    ports: &'a Ports,
     vt: &'a Nvt,
     stage: Stage,
     param: Option<&'a Vec<Parameter>>,
     scan_id: ScanID,
+    scan_preferences: &'a ScanPrefs,
+    alive_test_methods: &'a Vec<AliveTestMethods>,
 }
 
 impl<'a, Stack: ScannerStack> VTRunner<'a, Stack>
@@ -49,20 +52,26 @@ where
         loader: &'a Stack::Loader,
         executor: &'a Executor,
         target: &'a Target,
+        ports: &'a Ports,
         vt: &'a Nvt,
         stage: Stage,
         param: Option<&'a Vec<Parameter>>,
         scan_id: ScanID,
+        scan_preferences: &'a ScanPrefs,
+        alive_test_methods: &'a Vec<AliveTestMethods>,
     ) -> Result<ScriptResult, ExecuteError> {
         let s = Self {
             storage,
             loader,
             executor,
             target,
+            ports,
             vt,
             stage,
             param,
             scan_id,
+            scan_preferences,
+            alive_test_methods,
         };
         s.execute().await
     }
@@ -70,9 +79,9 @@ where
     fn set_parameters(&mut self, register: &mut Register) -> Result<(), ExecuteError> {
         if let Some(params) = &self.param {
             for p in params.iter() {
-                register.add_global(
+                register.add_global_var(
                     format!("{}_{}", SCRIPT_PARAMS, p.id).as_str(),
-                    ContextType::Value(NaslValue::String(p.value.clone())),
+                    NaslValue::String(p.value.clone()),
                 );
             }
         }
@@ -189,23 +198,31 @@ where
     async fn get_result_kind(
         &self,
         filename: PathBuf,
-        code: &str,
+        code: Code,
         register: Register,
     ) -> ScriptResultKind {
         if let Err(e) = self.check_keys(self.vt) {
             return e;
         }
-        let context = ContextBuilder {
+        let context = ScanCtxBuilder {
             scan_id: crate::storage::ScanID(self.scan_id.clone()),
             target: self.target.clone(),
+            ports: self.ports.clone(),
             filename,
             storage: self.storage,
             loader: self.loader,
             executor: self.executor,
+            scan_preferences: self.scan_preferences.clone(),
+            alive_test_methods: self.alive_test_methods.to_vec(),
         }
         .build();
         context.set_nvt(self.vt.clone());
-        let mut results = Box::pin(ForkingInterpreter::new(code, register, &context).stream());
+        let ast = code.parse().emit_errors();
+        if let Err(errs) = ast {
+            return ScriptResultKind::Error(InterpreterError::syntax_error(errs));
+        }
+        let ast = ast.unwrap();
+        let mut results = Box::pin(ForkingInterpreter::new(ast, register, &context).stream());
         while let Some(r) = results.next().await {
             match r {
                 Ok(NaslValue::Exit(x)) => return ScriptResultKind::ReturnCode(x),
@@ -219,14 +236,14 @@ where
     }
 
     async fn execute(mut self) -> Result<ScriptResult, ExecuteError> {
-        let code = self.loader.load(&self.vt.filename)?;
+        let code = Code::load(self.loader, &self.vt.filename)?;
         let mut register = Register::default();
         self.set_parameters(&mut register)?;
 
         // currently scans are limited to the target as well as the id.
         tracing::debug!("running");
         let kind = self
-            .get_result_kind(self.vt.filename.clone().into(), &code, register)
+            .get_result_kind(self.vt.filename.clone().into(), code, register)
             .await;
         tracing::debug!(result=?kind, "finished");
         Ok(ScriptResult {

@@ -88,6 +88,15 @@ log_whole_attack
     monitoring and debugging purpose, however this option might make
     openvas fill your disk rather quickly.
 
+report_scripts
+
+:   Stores in a file the script run duration in json format. This
+    option expects a valid path to store a file with scripts stats.
+    Script run durations are collected only if the log_whole_attack
+    setting is set to 'yes'. This is helpful for monitoring and
+    debugging purpose, however this option might make openvas fill
+    your disk rather quickly.
+
 debug_tls
 
 :   This is an scanner-only option which allows you to set the TLS log
@@ -293,6 +302,34 @@ min_free_mem
 :   Minimum available memory (in MB) which should be kept free on the
     system. Once this limit is reached, no further VTs are started until
     sufficient memory is available again.
+
+max_mem_kb
+
+:   Maximum amount of memory (in MB) allowed to use for a single script.
+    If this value is set, the amount of memory put into redis is tracked
+    for every Script. If the amount of memory exceeds this limit, the
+    script is not able to set more kb items. The tracked the value
+    written into redis is only estimated, as it does not check, if a
+    value was replaced or appended. The size of the key is also not
+    tracked. If this value is not set or <= 0, the maximum amount is
+    unlimited (Default).
+
+unscanned_closed
+
+:   This defines whether TCP ports that were not scanned should be treated like closed ports.
+    Defaults to "yes".
+
+unscanned_closed_udp
+
+:   This defines whether UDP ports that were not scanned should be treated as closed ports.
+    Defaults to "yes".
+
+table_driven_lsc
+
+:   This option will enable table driven local security Checks (LSC). This means
+    gathered packages are sent to a specialized scanner. This is far more efficient than doing
+    checks via NASL.
+    Defaults to "yes".
 
 The other options in this file can usually be redefined by the client.
 

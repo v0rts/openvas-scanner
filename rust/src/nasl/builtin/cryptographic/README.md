@@ -69,10 +69,14 @@ let functions = nasl_builtin_utils::NaslfunctionRegisterBuilder::new()
 - SHA1
 - SHA256
 - SHA512
+- DES
+- smb3kdf
+- smb_cmac_aes_signature
+- smb_gmac_aes_signature
+- insert_hexzeros
 
 ## Not yet implemented
 
-- DES
 - NTLMv1_HASH
 - NTLMv2_HASH
 - bf_cbc_decrypt
@@ -87,8 +91,6 @@ let functions = nasl_builtin_utils::NaslfunctionRegisterBuilder::new()
 - dsa_do_verify
 - get_signature
 - get_smb2_signature
-- index
-- insert_hexzeros
 - key_exchange
 - lm_owf_gen
 - nt_owf_gen
@@ -100,8 +102,5 @@ let functions = nasl_builtin_utils::NaslfunctionRegisterBuilder::new()
 - prf_sha256
 - prf_sha384
 - rc4_encrypt
-- smb3kdf
-- smb_cmac_aes_signature
-- smb_gmac_aes_signature
 - tls1_prf
 
