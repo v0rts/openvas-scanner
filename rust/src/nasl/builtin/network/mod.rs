@@ -6,15 +6,18 @@ use std::{fmt::Display, net::IpAddr};
 
 #[cfg(feature = "nasl-builtin-raw-ip")]
 use crate::nasl::raw_ip_utils::raw_ip_utils;
-use crate::{nasl::prelude::*, storage::items::kb::KbKey};
+use crate::{
+    nasl::{prelude::*, utils::DefineGlobalVars},
+    storage::items::kb::KbKey,
+};
 
 #[allow(clippy::module_inception)]
 pub mod network;
-pub mod network_utils;
+mod network_utils;
 pub mod socket;
-pub mod tcp;
-pub mod tls;
-pub mod udp;
+mod tcp;
+mod tls;
+mod udp;
 
 // 512 Bytes are typically supported by network devices. The ip header maximum size is 60 and a UDP
 // header contains 8 bytes, which must be subtracted from the max size for UDP packages.
@@ -25,17 +28,18 @@ const DEFAULT_PORT: u16 = 33435;
 
 // Get the max MTU possible for network communication
 #[cfg(not(feature = "nasl-builtin-raw-ip"))]
-pub fn mtu(_: IpAddr) -> usize {
+fn mtu(_: IpAddr) -> usize {
     MTU
 }
 #[cfg(feature = "nasl-builtin-raw-ip")]
-pub fn mtu(target_ip: IpAddr) -> usize {
+fn mtu(target_ip: IpAddr) -> usize {
     match raw_ip_utils::get_mtu(target_ip) {
         Ok(mtu) => mtu,
         Err(_) => MTU,
     }
 }
 
+#[derive(Clone)]
 pub enum OpenvasEncaps {
     Auto = 0, /* Request auto detection.  */
     Ip,
@@ -51,7 +55,7 @@ pub enum OpenvasEncaps {
 }
 
 impl OpenvasEncaps {
-    pub fn from_i64(val: i64) -> Option<Self> {
+    fn from_i64(val: i64) -> Option<Self> {
         match val {
             0 => Some(Self::Auto),
             1 => Some(Self::Ip),
@@ -65,6 +69,40 @@ impl OpenvasEncaps {
             9 => Some(Self::TlsCustom),
             10 => Some(Self::Max),
             _ => None,
+        }
+    }
+}
+
+impl From<OpenvasEncaps> for i64 {
+    fn from(value: OpenvasEncaps) -> Self {
+        match value {
+            OpenvasEncaps::Auto => 0,
+            OpenvasEncaps::Ip => 1,
+            OpenvasEncaps::Ssl23 => 2,
+            OpenvasEncaps::Ssl2 => 3,
+            OpenvasEncaps::Ssl3 => 4,
+            OpenvasEncaps::Tls1 => 5,
+            OpenvasEncaps::Tls11 => 6,
+            OpenvasEncaps::Tls12 => 7,
+            OpenvasEncaps::Tls13 => 8,
+            OpenvasEncaps::TlsCustom => 9,
+            OpenvasEncaps::Max => 10,
+        }
+    }
+}
+
+impl From<OpenvasEncaps> for String {
+    fn from(value: OpenvasEncaps) -> String {
+        match value {
+            OpenvasEncaps::Ip => "None".to_string(),
+            OpenvasEncaps::Ssl23 => "SSL 2.3".to_string(),
+            OpenvasEncaps::Ssl2 => "SSL 2".to_string(),
+            OpenvasEncaps::Ssl3 => "SSL 3".to_string(),
+            OpenvasEncaps::Tls1 => "TLS 1".to_string(),
+            OpenvasEncaps::Tls11 => "TLS 1.1".to_string(),
+            OpenvasEncaps::Tls12 => "TLS 1.2".to_string(),
+            OpenvasEncaps::Tls13 => "TLS 1.3".to_string(),
+            _ => "None".to_string(),
         }
     }
 }
@@ -85,7 +123,7 @@ impl Display for OpenvasEncaps {
     }
 }
 
-pub fn get_retry(context: &ScanCtx) -> u8 {
+fn get_retry(context: &ScanCtx) -> u8 {
     if let Ok(val) = context.get_single_kb_item(&KbKey::TimeoutRetry) {
         match val {
             NaslValue::String(val) => val.parse::<u8>().unwrap_or(2),
@@ -119,5 +157,13 @@ impl FromNaslValue<'_> for Port {
         } else {
             Ok(Port(port as u16))
         }
+    }
+}
+
+pub struct Network;
+
+impl DefineGlobalVars for Network {
+    fn get_global_vars() -> Vec<(&'static str, NaslValue)> {
+        socket::SocketFns::get_global_vars().into_iter().collect()
     }
 }

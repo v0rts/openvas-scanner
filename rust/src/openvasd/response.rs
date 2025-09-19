@@ -62,7 +62,7 @@ pub enum BodyKind {
 
 #[derive(Debug)]
 /// Is used to control the BinaryStream output
-pub enum SendState {
+pub(crate) enum SendState {
     /// Triggers [
     Start,
     /// true triggers ...data... false triggers ,...data...
@@ -215,10 +215,10 @@ impl Response {
             if send(SendState::Start) {
                 return;
             }
-            if let Some(v) = value.next() {
-                if send(SendState::Bytes(true, v)) {
-                    return;
-                };
+            if let Some(v) = value.next()
+                && send(SendState::Bytes(true, v))
+            {
+                return;
             }
             if value.any(|v| send(SendState::Bytes(false, v))) {
                 return;
@@ -229,24 +229,6 @@ impl Response {
             drop(tx);
         });
         self.json_response(status, BodyKind::BinaryStream(rx))
-    }
-
-    #[inline]
-    pub async fn ok_byte_stream<T>(&self, value: T) -> Result
-    where
-        T: Iterator<Item = Vec<u8>> + Send + 'static,
-    {
-        self.byte_stream(hyper::StatusCode::OK, value).await
-    }
-
-    #[inline]
-    pub async fn ok_json_stream<T, S>(&self, value: T) -> Result
-    where
-        T: Iterator<Item = S> + Send + 'static,
-        S: Serialize + Clone + Send + std::fmt::Debug + 'static,
-    {
-        let value = value.map(|x| serde_json::to_vec(&x).unwrap());
-        self.ok_byte_stream(value).await
     }
 
     fn create<T>(&self, code: hyper::StatusCode, value: &T) -> Result

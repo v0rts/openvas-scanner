@@ -11,7 +11,7 @@ on:
 jobs:
   analyze:
     name: Analyze
-    runs-on: self-hosted-generic
+    runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
@@ -21,7 +21,7 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
     - name: install dependencies
       run: |
           sh .github/install-openvas-dependencies.sh

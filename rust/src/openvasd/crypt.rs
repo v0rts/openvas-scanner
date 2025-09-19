@@ -7,19 +7,19 @@ use std::fmt::Display;
 use async_trait::async_trait;
 use chacha20::ChaCha20;
 use chacha20::cipher::{KeyIvInit, StreamCipher};
-use generic_array::GenericArray;
 use generic_array::typenum::U32;
 use pbkdf2::pbkdf2_hmac;
 use rand::{self, RngCore};
 use sha2::Sha256;
+use sha2::digest::generic_array::GenericArray;
 
 #[derive(Clone, Debug)]
-pub struct Key(GenericArray<u8, U32>);
+struct Key(GenericArray<u8, U32>);
 
 impl Default for Key {
     fn default() -> Self {
         let mut key = [0u8; 32];
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         rng.fill_bytes(&mut key);
         Key(key.into())
     }
@@ -43,9 +43,11 @@ impl From<String> for Key {
 
 #[async_trait]
 pub trait Crypt {
+    #[cfg(test)]
     async fn encrypt(&self, data: Vec<u8>) -> Encrypted;
     fn encrypt_sync(&self, data: Vec<u8>) -> Encrypted;
 
+    #[cfg(test)]
     async fn decrypt(&self, encrypted: Encrypted) -> Vec<u8>;
     fn decrypt_sync(&self, encrypted: &Encrypted) -> Vec<u8>;
 }
@@ -58,7 +60,7 @@ pub struct ChaCha20Crypt {
 impl ChaCha20Crypt {
     fn encrypt_sync(key: &Key, mut data: Vec<u8>) -> Encrypted {
         let mut nonce = [0u8; 12];
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         rng.fill_bytes(&mut nonce);
         let Key(key) = key;
         let mut cipher = ChaCha20::new(key, &nonce.into());
@@ -77,6 +79,7 @@ impl ChaCha20Crypt {
 
 #[async_trait]
 impl Crypt for ChaCha20Crypt {
+    #[cfg(test)]
     async fn encrypt(&self, data: Vec<u8>) -> Encrypted {
         let key = self.key.clone();
         tokio::task::spawn_blocking(move || Self::encrypt_sync(&key, data))
@@ -88,6 +91,7 @@ impl Crypt for ChaCha20Crypt {
         Self::encrypt_sync(&self.key, data)
     }
 
+    #[cfg(test)]
     async fn decrypt(&self, encrypted: Encrypted) -> Vec<u8> {
         let key = self.key.clone();
         tokio::task::spawn_blocking(move || Self::decrypt_sync(&key, &encrypted))

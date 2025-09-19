@@ -45,7 +45,7 @@ on:
 
 jobs:
   init:
-    runs-on: self-hosted-generic
+    runs-on: ubuntu-latest
     outputs:
       is_latest_tag: ${{ steps.version.outputs.is_latest_tag }}
       is_version_tag: ${{ steps.version.outputs.is_version_tag }}
@@ -57,7 +57,7 @@ jobs:
       project:  ${{ steps.version.outputs.project}}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: "set IS_VERSION_TAG"

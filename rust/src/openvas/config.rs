@@ -6,7 +6,9 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Config {
+// TODO: Actually use this configuration
+#[allow(dead_code)]
+struct Config {
     pub max_queued_scans: Option<usize>,
     pub max_running_scans: Option<usize>,
     pub min_free_mem: Option<u64>,

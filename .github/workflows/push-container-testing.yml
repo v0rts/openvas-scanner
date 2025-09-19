@@ -19,10 +19,10 @@ jobs:
   # TODO: do we need to push or is building enough?
   debian_testing:
     name: ghcr:debian:testing
-    runs-on: "self-hosted-generic"
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Container build and push 3rd gen
         id: build-and-push
         uses: greenbone/actions/container-build-push-generic@v3

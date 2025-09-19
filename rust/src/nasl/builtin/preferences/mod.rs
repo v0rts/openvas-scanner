@@ -4,8 +4,9 @@
 use crate::models::PreferenceValue;
 use crate::nasl::prelude::*;
 use crate::scanner::preferences::preference::PREFERENCES;
-#[nasl_function(named(id))]
-fn script_get_preference(
+use base64::Engine as _;
+
+fn script_get_preference_shared(
     register: &Register,
     config: &ScanCtx,
     name: Option<String>,
@@ -29,18 +30,50 @@ fn script_get_preference(
 
     // A parameter name is given. Search for the param in NVT metadata to get the ID.
     // Then, search with the ID in the scan config, otherwise return the default value from the NVT metadata.
-    if let Some(pref_name) = name {
-        if let Some(pref) = config
+    if let Some(pref_name) = name
+        && let Some(pref) = config
             .nvt()
             .clone()
             .and_then(|nvt| nvt.preferences.into_iter().find(|p| p.name == pref_name))
-        {
-            return register
-                .script_param(pref.id().unwrap() as usize)
-                .or_else(|| Some(NaslValue::String(pref.default().to_string())));
-        }
+    {
+        return register
+            .script_param(pref.id().unwrap() as usize)
+            .or_else(|| Some(NaslValue::String(pref.default().to_string())));
     }
     None
+}
+
+fn script_get_preference_file_content_shared(
+    register: &Register,
+    config: &ScanCtx,
+    name: Option<String>,
+    id: Option<usize>,
+) -> Option<Vec<u8>> {
+    let content = script_get_preference_shared(register, config, name, id)?;
+    let content = content.as_string().unwrap();
+    base64::engine::general_purpose::STANDARD
+        .decode(content)
+        .ok()
+}
+
+#[nasl_function(named(id))]
+fn script_get_preference_file_content(
+    register: &Register,
+    config: &ScanCtx,
+    name: Option<String>,
+    id: Option<usize>,
+) -> Option<Vec<u8>> {
+    script_get_preference_file_content_shared(register, config, name, id)
+}
+
+#[nasl_function(named(id))]
+fn script_get_preference(
+    register: &Register,
+    config: &ScanCtx,
+    name: Option<String>,
+    id: Option<usize>,
+) -> Option<NaslValue> {
+    script_get_preference_shared(register, config, name, id)
 }
 
 #[nasl_function]
@@ -77,5 +110,6 @@ function_set! {
     (
         script_get_preference,
         get_preference,
+        script_get_preference_file_content,
     )
 }

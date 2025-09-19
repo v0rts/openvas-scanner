@@ -4,21 +4,21 @@
 
 mod session;
 
+use russh::keys::Algorithm;
 pub use session::SshSession;
 use tokio::sync::Mutex;
 
 use std::{net::IpAddr, time::Duration};
 
-use russh::cipher;
-use russh_keys::key;
-
 use super::error::Result;
+use russh::cipher;
 
 use super::sessions::SshSessions;
 
 pub type SessionId = i32;
-pub type Port = u16;
 pub type Socket = i32;
+
+type Port = u16;
 
 // This is a 'clone' of the libssh::AuthMethods, so
 // the capital case names are intentional.
@@ -36,7 +36,7 @@ impl SshSessions {
         socket: Option<Socket>,
         ip_addr: IpAddr,
         port: Port,
-        keytype: Vec<key::Name>,
+        keytype: Vec<Algorithm>,
         csciphers: Vec<cipher::Name>,
         scciphers: Vec<cipher::Name>,
         timeout: Option<Duration>,

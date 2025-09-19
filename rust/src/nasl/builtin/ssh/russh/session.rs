@@ -8,7 +8,7 @@ use std::{net::IpAddr, sync::Arc};
 
 use async_trait::async_trait;
 use client::{DisconnectReason, Session, connect};
-use russh::keys::*;
+use russh::keys::Algorithm;
 use russh::*;
 use tracing::{error, warn};
 
@@ -26,49 +26,65 @@ struct Client {}
 impl client::Handler for Client {
     type Error = russh::Error;
 
-    async fn check_server_key(
+    #[allow(clippy::manual_async_fn)]
+    fn check_server_key(
         &mut self,
-        _server_public_key: &key::PublicKey,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
+        _server_public_key: &russh::keys::PublicKey,
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
+        async { Ok(true) }
     }
 
     #[allow(unused_variables)]
-    async fn channel_open_confirmation(
+    #[allow(clippy::manual_async_fn)]
+    fn channel_open_confirmation(
         &mut self,
         id: ChannelId,
         max_packet_size: u32,
         window_size: u32,
         session: &mut Session,
-    ) -> Result<(), Self::Error> {
-        Ok(())
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async { Ok(()) }
     }
 
-    async fn channel_close(&mut self, _: ChannelId, _: &mut Session) -> Result<(), Self::Error> {
-        Ok(())
+    #[allow(clippy::manual_async_fn)]
+    fn channel_close(
+        &mut self,
+        _: ChannelId,
+        _: &mut Session,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async { Ok(()) }
     }
 
-    async fn data(&mut self, _: ChannelId, _: &[u8], _: &mut Session) -> Result<(), Self::Error> {
-        Ok(())
+    #[allow(clippy::manual_async_fn)]
+    fn data(
+        &mut self,
+        _: ChannelId,
+        _: &[u8],
+        _: &mut Session,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async { Ok(()) }
     }
 
     /// Called when the server sent a disconnect message
     ///
     /// If reason is an Error, this function should re-return the error so the join can also evaluate it
-    async fn disconnected(
+    #[allow(clippy::manual_async_fn)]
+    fn disconnected(
         &mut self,
         reason: DisconnectReason<Self::Error>,
-    ) -> Result<(), Self::Error> {
-        match reason {
-            DisconnectReason::ReceivedDisconnect(_) => Ok(()),
-            DisconnectReason::Error(e) => {
-                match e {
-                    russh::Error::Disconnect => {}
-                    _ => {
-                        error!("SSH session disconnected due to error: {}", e);
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async {
+            match reason {
+                DisconnectReason::ReceivedDisconnect(_) => Ok(()),
+                DisconnectReason::Error(e) => {
+                    match e {
+                        russh::Error::Disconnect => {}
+                        _ => {
+                            error!("SSH session disconnected due to error: {}", e);
+                        }
                     }
+                    Err(e)
                 }
-                Err(e)
             }
         }
     }
@@ -91,7 +107,7 @@ impl SshSession {
         ip_addr: IpAddr,
         port: Port,
         timeout: Option<Duration>,
-        keytype: Vec<key::Name>,
+        keytype: Vec<Algorithm>,
         csciphers: Vec<cipher::Name>,
         scciphers: Vec<cipher::Name>,
         socket: Option<Socket>,
@@ -117,7 +133,7 @@ impl SshSession {
         Ok(Self { session, id })
     }
 
-    pub async fn exec_ssh_cmd(&self, command: &str) -> Result<Output, SshError> {
+    pub(crate) async fn exec_ssh_cmd(&self, command: &str) -> Result<Output, SshError> {
         let (stdout, stderr) = self.call(command).await.map_err(|e| {
             SshErrorKind::RequestExec(command.to_string())
                 .with(self.id)
@@ -126,7 +142,7 @@ impl SshSession {
         Ok(Output { stdout, stderr })
     }
 
-    pub async fn call(&self, command: &str) -> Result<(String, String), russh::Error> {
+    async fn call(&self, command: &str) -> Result<(String, String), russh::Error> {
         let mut channel = self.session.channel_open_session().await?;
         channel.exec(true, command).await?;
 
@@ -183,7 +199,7 @@ impl SshSession {
             .map_err(|_| make_err())?;
         match response {
             client::KeyboardInteractiveAuthResponse::Success => Ok(()),
-            client::KeyboardInteractiveAuthResponse::Failure => Err(make_err()),
+            client::KeyboardInteractiveAuthResponse::Failure { .. } => Err(make_err()),
             client::KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
                 let mut answers: Vec<String> = Vec::new();
                 for p in prompts.into_iter() {
@@ -210,7 +226,7 @@ impl SshSession {
 }
 
 fn construct_preferred(
-    keytype: Vec<key::Name>,
+    keytype: Vec<Algorithm>,
     csciphers: Vec<cipher::Name>,
     scciphers: Vec<cipher::Name>,
 ) -> Preferred {
