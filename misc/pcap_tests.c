@@ -92,6 +92,8 @@ Ensure (pcap, routethrough_dst_is_localhost)
   // assert_that ((interface = routethrough (dst4_p, NULL)), is_not_null);
   // assert_that (interface, is_equal_to_string ("lo"));
   g_socket_use_real = true;
+
+  gvm_host_free (gvm_host);
 }
 
 /* If dst is not null for routethrough() then another interface than "lo" is
@@ -116,6 +118,8 @@ Ensure (pcap, routethrough_dst_is_not_localhost)
   interface = routethrough (dst4_p, NULL);
   assert_that (interface, is_not_equal_to_string ("lo"));
   g_socket_use_real = true;
+
+  gvm_host_free (gvm_host);
 }
 
 /* If neither dst nor src address are given to routethrough NULL is returned. */
@@ -299,13 +303,18 @@ openvas_routethrough ()
 int
 main (int argc, char **argv)
 {
+  int ret;
   TestSuite *suite;
 
   suite = create_test_suite ();
   add_suite (suite, openvas_routethrough ());
 
   if (argc > 1)
-    return run_single_test (suite, argv[1], create_text_reporter ());
+    ret = run_single_test (suite, argv[1], create_text_reporter ());
+  else
+    ret = run_test_suite (suite, create_text_reporter ());
 
-  return run_test_suite (suite, create_text_reporter ());
+  destroy_test_suite (suite);
+
+  return ret;
 }

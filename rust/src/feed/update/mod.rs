@@ -82,7 +82,7 @@ pub async fn feed_version(
 
     let feed_version = interpreter
         .register()
-        .nasl_value("PLUGIN_SET")
+        .global_nasl_value("PLUGIN_SET")
         .map(|x| x.to_string())
         .unwrap_or_else(|_| "0".to_owned());
     Ok(feed_version)
@@ -134,17 +134,6 @@ where
     /// Loads the plugin_feed_info and returns the feed version
     async fn feed_version(&self) -> Result<String, ErrorKind> {
         feed_version(self.loader, self.storage).await
-    }
-
-    /// Check if the current feed is outdated.
-    pub async fn feed_is_outdated(&self, current_version: String) -> Result<bool, ErrorKind> {
-        // the version in file
-        let v = self.feed_version().await?;
-        if !current_version.is_empty() {
-            return Ok(v.as_str() != current_version.as_str());
-        };
-
-        Ok(true)
     }
 
     /// plugin_feed_info must be handled differently.

@@ -17,6 +17,7 @@ mod aes_gcm;
 mod aes_gmac;
 mod bf_cbc;
 mod des;
+mod dh;
 mod hash;
 mod hmac;
 mod misc;
@@ -60,7 +61,7 @@ fn get_required_named_data<'a>(
     register: &'a Register,
     key: &'a str,
 ) -> Result<&'a [u8], ArgumentError> {
-    match register.nasl_value(key) {
+    match register.local_nasl_value(key) {
         Ok(NaslValue::Data(x)) => Ok(x.as_slice()),
         Ok(NaslValue::String(x)) => Ok(x.as_bytes()),
         Ok(x) => Err(ArgumentError::wrong_argument(
@@ -77,7 +78,7 @@ fn get_required_named_data<'a>(
 /// set to Some value. If it is false, no error will be returned but the Option can be either Some
 /// or None.
 fn get_optional_named_number(register: &Register, key: &str) -> Result<Option<i64>, ArgumentError> {
-    match register.nasl_value(key) {
+    match register.local_nasl_value(key) {
         Ok(NaslValue::Number(x)) => Ok(Some(*x)),
         Ok(x) => Err(ArgumentError::wrong_argument(
             key,
@@ -147,6 +148,7 @@ impl IntoFunctionSet for Cryptographic {
         set.add_set(smb::Smb);
         set.add_set(misc::Misc);
         set.add_set(ntlm::Ntlm);
+        set.add_set(dh::Dh);
         set
     }
 }

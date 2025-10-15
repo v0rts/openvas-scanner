@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use crate::models::{self, Protocol, ResultType};
+use greenbone_scanner_framework::models::{self, Protocol, ResultType};
 
 use crate::nasl::prelude::*;
 
@@ -31,15 +31,18 @@ impl Reporting {
         register: &Register,
         context: &ScanCtx,
     ) -> Result<NaslValue, FnError> {
-        let data = register.nasl_value("data").ok().map(|x| x.to_string());
+        let data = register
+            .local_nasl_value("data")
+            .ok()
+            .map(|x| x.to_string());
         let port = register
-            .nasl_value("port")
+            .local_nasl_value("port")
             .ok()
             .map(|x| x.convert_to_number())
             .map(|x: i64| x as i16);
 
         let protocol = match register
-            .nasl_value("proto")
+            .local_nasl_value("proto")
             .ok()
             .map(|x| x.to_string())
             .as_ref()
@@ -51,6 +54,7 @@ impl Reporting {
         let target = context.target();
         let hostname = target.hostname();
         let ip_address = target.ip_addr();
+        //TODO: rename models::Result to allow direct import
         let result = models::Result {
             id: self.id(),
             r_type: typus,
